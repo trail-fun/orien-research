@@ -13,13 +13,13 @@ const GSI_TILE_URL = 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png'
 export function PrepareScreen({ onReady, existingProject }: Props) {
   const mapContainer = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
-  const bboxLayerAdded = useRef(false)
   const [project, setProject] = useState<ProjectData | null>(existingProject)
   const [cacheStatus, setCacheStatus] = useState<'idle' | 'caching' | 'done'>('idle')
   const [cacheProgress, setCacheProgress] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [cacheBbox, setCacheBbox] = useState<[number, number, number, number] | null>(null)
 
+  // ---- map init ----
   useEffect(() => {
     if (!mapContainer.current) return
     const map = new maplibregl.Map({
@@ -46,49 +46,44 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
     return () => {
       map.remove()
       mapRef.current = null
-      bboxLayerAdded.current = false
     }
   }, [])
 
-  const showPrintArea = useCallback((print: PrintInfo) => {
+  // ---- map resize when layout changes (footer button appears) ----
+  useEffect(() => {
     const map = mapRef.current
     if (!map) return
+    // Defer to next frame so DOM has settled
+    const id = requestAnimationFrame(() => map.resize())
+    return () => cancelAnimationFrame(id)
+  }, [project]) // re-run when project is set (footer appears / disappears)
+
+  const showPrintArea = useCallback((print: PrintInfo) => {
+    const map = mapRef.current
+    if (!map || !print?.bbox) return
     const [west, south, east, north] = print.bbox
 
     const addBboxLayer = () => {
+      const geojsonData = {
+        type: 'FeatureCollection' as const,
+        features: [{
+          type: 'Feature' as const,
+          properties: {},
+          geometry: {
+            type: 'Polygon' as const,
+            coordinates: [[[west, south], [east, south], [east, north], [west, north], [west, south]]]
+          }
+        }]
+      }
       if (map.getSource('print-bbox')) {
-        (map.getSource('print-bbox') as maplibregl.GeoJSONSource).setData({
-          type: 'FeatureCollection',
-          features: [{
-            type: 'Feature',
-            properties: {},
-            geometry: {
-              type: 'Polygon',
-              coordinates: [[[west,south],[east,south],[east,north],[west,north],[west,south]]]
-            }
-          }]
-        })
+        (map.getSource('print-bbox') as maplibregl.GeoJSONSource).setData(geojsonData)
         return
       }
-      map.addSource('print-bbox', {
-        type: 'geojson',
-        data: {
-          type: 'FeatureCollection',
-          features: [{
-            type: 'Feature',
-            properties: {},
-            geometry: {
-              type: 'Polygon',
-              coordinates: [[[west,south],[east,south],[east,north],[west,north],[west,south]]]
-            }
-          }]
-        }
-      })
+      map.addSource('print-bbox', { type: 'geojson', data: geojsonData })
       map.addLayer({ id: 'print-bbox-fill', type: 'fill', source: 'print-bbox',
         paint: { 'fill-color': '#2d6a4f', 'fill-opacity': 0.1 } })
       map.addLayer({ id: 'print-bbox-line', type: 'line', source: 'print-bbox',
-        paint: { 'line-color': '#2d6a4f', 'line-width': 2, 'line-dasharray': [4,2] } })
-      bboxLayerAdded.current = true
+        paint: { 'line-color': '#2d6a4f', 'line-width': 2, 'line-dasharray': [4, 2] } })
     }
 
     if (map.isStyleLoaded()) {
@@ -102,7 +97,7 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
   }, [])
 
   useEffect(() => {
-    if (existingProject?.metadata.print) {
+    if (existingProject?.metadata?.print) {
       showPrintArea(existingProject.metadata.print)
     }
   }, [existingProject, showPrintArea])
@@ -113,24 +108,22 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
     setError(null)
     try {
       const text = await file.text()
-      const json = JSON.parse(text)
+      const json = JSON.parse(text) as unknown
       const parsed = parseS1GeoJSON(json)
       setProject(parsed)
       showPrintArea(parsed.metadata.print)
-    } catch {
-      setError('GeoJSONの読み込みに失敗しました。ファイルを確認してください。')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      setError(`読み込みエラー: ${msg}`)
     }
     e.target.value = ''
   }
 
   const estimateCacheSize = (bbox: [number, number, number, number]) => {
     const [west, south, east, north] = bbox
-    const latRange = north - south
-    const lngRange = east - west
-    const area = latRange * lngRange
-    // rough estimate: ~50KB per tile, ~4 tiles per zoom level per area unit
+    const area = (north - south) * (east - west)
     const tiles = Math.round(area * 40000)
-    return Math.min(Math.round(tiles * 0.05), 500)
+    return Math.max(1, Math.min(Math.round(tiles * 0.05), 500))
   }
 
   const handleCacheMap = async () => {
@@ -138,15 +131,13 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
     setCacheStatus('caching')
     setCacheProgress(0)
 
-    // Trigger tile prefetch via Service Worker message
     const [west, south, east, north] = cacheBbox
     const minZoom = 10
     const maxZoom = 16
     let count = 0
-    const total = (maxZoom - minZoom + 1) * 10
+    const total = maxZoom - minZoom + 1
 
     for (let z = minZoom; z <= maxZoom; z++) {
-      // Convert bbox to tile coords
       const minX = Math.floor(((west + 180) / 360) * Math.pow(2, z))
       const maxX = Math.floor(((east + 180) / 360) * Math.pow(2, z))
       const sinSouth = Math.sin((south * Math.PI) / 180)
@@ -157,10 +148,11 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
       const fetchPromises: Promise<void>[] = []
       for (let x = minX; x <= Math.min(maxX, minX + 20); x++) {
         for (let y = minY; y <= Math.min(maxY, minY + 20); y++) {
-          const url = GSI_TILE_URL.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y))
-          fetchPromises.push(
-            fetch(url).then(() => {}).catch(() => {})
-          )
+          const url = GSI_TILE_URL
+            .replace('{z}', String(z))
+            .replace('{x}', String(x))
+            .replace('{y}', String(y))
+          fetchPromises.push(fetch(url).then(() => {}).catch(() => {}))
         }
       }
       await Promise.all(fetchPromises)
@@ -171,42 +163,46 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
     setCacheStatus('done')
   }
 
+  const printInfo = project?.metadata?.print
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ padding: '12px 16px', background: '#2d6a4f', color: 'white' }}>
+      {/* Header */}
+      <div style={{ padding: '12px 16px', background: '#2d6a4f', color: 'white', flexShrink: 0 }}>
         <h1 style={{ margin: 0, fontSize: 18, fontWeight: 'bold' }}>下見支援アプリ — 事前準備</h1>
       </div>
 
-      <div style={{ padding: '12px 16px', background: '#f0faf4', borderBottom: '1px solid #c3e8d0' }}>
+      {/* Controls */}
+      <div style={{ padding: '12px 16px', background: '#f0faf4', borderBottom: '1px solid #c3e8d0', flexShrink: 0 }}>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
           <label style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,
             padding: '8px 14px', background: '#2d6a4f', color: 'white',
             borderRadius: 6, cursor: 'pointer', fontSize: 14, fontWeight: 600
           }}>
-            <span>📂</span> GeoJSONを読み込む
+            📂 GeoJSONを読み込む
             <input type="file" accept=".geojson,.json" onChange={handleFileImport}
               style={{ display: 'none' }} />
           </label>
 
           {project && (
             <div style={{ fontSize: 13, color: '#2d6a4f', fontWeight: 600 }}>
-              ✓ {project.metadata.area_name} — CP候補 {project.cpCandidates.length}件
+              ✓ {project.metadata.area_name || '（エリア名なし）'} — CP候補 {project.cpCandidates.length}件
             </div>
           )}
         </div>
 
         {error && (
           <div style={{ marginTop: 8, padding: '8px 12px', background: '#ffeaea', color: '#c0392b',
-            borderRadius: 6, fontSize: 13 }}>
+            borderRadius: 6, fontSize: 13, wordBreak: 'break-all' }}>
             {error}
           </div>
         )}
 
-        {project && (
+        {printInfo && (
           <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <div style={{ fontSize: 13, color: '#555' }}>
-              縮尺: {project.metadata.print.scale} / サイズ: {project.metadata.print.size}
+              縮尺: {printInfo.scale} / サイズ: {printInfo.size}
               {cacheBbox && ` / 保存目安: ~${estimateCacheSize(cacheBbox)}MB`}
             </div>
             {cacheStatus === 'idle' && (
@@ -232,10 +228,12 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
         )}
       </div>
 
-      <div ref={mapContainer} style={{ flex: 1 }} />
+      {/* Map */}
+      <div ref={mapContainer} style={{ flex: 1, minHeight: 0 }} />
 
+      {/* Start button */}
       {project && (
-        <div style={{ padding: 12, background: '#f0faf4', borderTop: '1px solid #c3e8d0', textAlign: 'center' }}>
+        <div style={{ padding: 12, background: '#f0faf4', borderTop: '1px solid #c3e8d0', textAlign: 'center', flexShrink: 0 }}>
           <button
             onClick={() => onReady(project)}
             style={{
