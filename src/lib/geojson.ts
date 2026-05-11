@@ -1,8 +1,32 @@
-import type { ProjectData, CpCandidate, S1Metadata } from '../types'
+import type { ProjectData, CpCandidate, S1Metadata, PrintInfo } from '../types'
+
+// S1のフィーチャーtypeをcp_candidateのusageに変換
+function toUsage(type: string, usage: string | null): CpCandidate['usage'] {
+  if (type === 'start') return 'start'
+  if (type === 'finish') return 'goal'
+  if (usage === 'start') return 'start'
+  if (usage === 'goal') return 'goal'
+  if (usage === 'both') return 'both'
+  return 'cp'
+}
+
+// フィーチャー群からbboxを計算
+function calcBbox(features: Array<{ geometry: { coordinates: unknown } }>): [number, number, number, number] {
+  let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity
+  for (const f of features) {
+    const [lng, lat] = f.geometry.coordinates as [number, number]
+    if (lng < minLng) minLng = lng
+    if (lat < minLat) minLat = lat
+    if (lng > maxLng) maxLng = lng
+    if (lat > maxLat) maxLat = lat
+  }
+  const pad = 0.002
+  return [minLng - pad, minLat - pad, maxLng + pad, maxLat + pad]
+}
 
 export function parseS1GeoJSON(raw: unknown): ProjectData {
   const geojson = raw as {
-    metadata: S1Metadata
+    metadata: Record<string, unknown>
     features: Array<{
       type: string
       properties: Record<string, unknown>
@@ -10,27 +34,73 @@ export function parseS1GeoJSON(raw: unknown): ProjectData {
     }>
   }
 
-  const cpCandidates: CpCandidate[] = []
+  const features = geojson.features ?? []
+  const meta = geojson.metadata ?? {}
 
-  for (const f of geojson.features ?? []) {
-    if (f.properties.type === 'cp_candidate') {
-      const coords = f.geometry.coordinates as [number, number]
+  // --- メタデータ正規化（仕様書フォーマット / 実S1出力の両方に対応）---
+  const printFromMeta = meta.print as Record<string, unknown> | undefined
+  const print: PrintInfo = {
+    scale: (printFromMeta?.scale ?? meta.scale ?? '1:10000') as string,
+    size: (printFromMeta?.size ?? meta.output_size ?? meta.size ?? 'A4') as string,
+    orientation: ((printFromMeta?.orientation ?? meta.orientation ?? 'portrait') as string) as 'portrait' | 'landscape',
+    bbox: (printFromMeta?.bbox as [number, number, number, number]) ?? calcBbox(features),
+  }
+
+  const metadata: S1Metadata = {
+    version: (meta.version as string) ?? '1.0',
+    schema: (meta.schema as string) ?? 'orienteering-base-v1',
+    created_at: (meta.created_at as string) ?? new Date().toISOString(),
+    area_name: (meta.area_name as string) ?? '',
+    memo: (meta.memo as string) ?? '',
+    print,
+  }
+
+  // --- フィーチャー解析（cp_candidate 形式 / start・cp・finish 形式の両方に対応）---
+  const cpCandidates: CpCandidate[] = []
+  let counter = 1
+
+  for (const f of features) {
+    if (f.geometry.type !== 'Point') continue
+    const p = f.properties
+    const featureType = p.type as string
+
+    // 仕様書フォーマット（cp_candidate）
+    if (featureType === 'cp_candidate') {
       cpCandidates.push({
-        id: f.properties.id as string,
+        id: (p.id as string) ?? `cpc_${String(counter).padStart(3, '0')}`,
         type: 'cp_candidate',
-        number: f.properties.number as number,
-        usage: f.properties.usage as CpCandidate['usage'],
-        order: f.properties.order as number,
-        score: f.properties.score as number,
-        memo: (f.properties.memo as string) ?? '',
+        number: (p.number as number) ?? counter,
+        usage: (p.usage as CpCandidate['usage']) ?? 'cp',
+        order: (p.order as number) ?? counter,
+        score: (p.score as number) ?? 10,
+        memo: (p.memo as string) ?? '',
         source: 's1',
-        coordinates: coords,
+        coordinates: f.geometry.coordinates as [number, number],
       })
+      counter++
+      continue
+    }
+
+    // 実S1出力フォーマット（start / cp / finish）
+    if (['start', 'cp', 'finish'].includes(featureType)) {
+      const num = featureType === 'start' ? 0 : featureType === 'finish' ? 999 : (p.number as number) ?? counter
+      cpCandidates.push({
+        id: `cpc_${String(counter).padStart(3, '0')}`,
+        type: 'cp_candidate',
+        number: num,
+        usage: toUsage(featureType, p.usage as string | null),
+        order: (p.order as number) ?? counter,
+        score: (p.score as number) ?? 10,
+        memo: (p.memo as string) ?? '',
+        source: 's1',
+        coordinates: f.geometry.coordinates as [number, number],
+      })
+      counter++
     }
   }
 
   return {
-    metadata: geojson.metadata,
+    metadata,
     cpCandidates,
     cps: [],
     surveyMemos: [],
