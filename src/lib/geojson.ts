@@ -50,12 +50,14 @@ export function formatDistance(m: number): string {
   return m >= 1000 ? `${(m / 1000).toFixed(1)}km` : `${Math.round(m)}m`
 }
 
-/** Sort CP candidates / CPs: start → cp (by number) → goal */
-export function sortByOrder<T extends { number: number; usage: string }>(items: T[]): T[] {
+/** Sort CP candidates / CPs: start → cp (by order, then number) → goal */
+export function sortByOrder<T extends { number: number; usage: string; order: number }>(items: T[]): T[] {
   return [...items].sort((a, b) => {
     const pri = (u: string) => u === 'start' ? 0 : u === 'goal' ? 2 : 1
     const d = pri(a.usage) - pri(b.usage)
-    return d !== 0 ? d : a.number - b.number
+    if (d !== 0) return d
+    if (a.order !== b.order) return a.order - b.order
+    return a.number - b.number
   })
 }
 

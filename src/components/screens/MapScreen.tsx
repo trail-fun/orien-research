@@ -8,6 +8,7 @@ import { generateId, haversine, formatDistance, sortByOrder } from '../../lib/ge
 import { exportZip } from '../../lib/export'
 import { CPEditModal } from '../CPEditModal'
 import { CPCandidateInfoModal } from '../CPCandidateInfoModal'
+import { CPListModal } from '../CPListModal'
 import { SurveyMemoModal } from '../SurveyMemoModal'
 
 interface Props {
@@ -21,6 +22,7 @@ type ModalState =
   | { type: 'cp-edit'; cp: Cp; candidate?: CpCandidate }
   | { type: 'cp-candidate-info'; candidate: CpCandidate }
   | { type: 'survey-memo'; objectType: SurveyMemoObjectType; memo: SurveyMemo | null }
+  | { type: 'cp-list' }
 
 const GSI_TILE_URL = 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png'
 const MAX_UNDO = 50
@@ -349,6 +351,12 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
     setSelectedMemoId(null)
   }
 
+  // ---- CP list save ----
+  const handleCpListSave = (updatedCps: Cp[]) => {
+    onProjectChange({ ...projectRef.current, cps: updatedCps })
+    setModal({ type: 'none' })
+  }
+
   // ---- place CP from candidate info modal ----
   const handlePlaceCpFromCandidate = (candidate: CpCandidate) => {
     const p = projectRef.current
@@ -444,13 +452,16 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
         padding: '8px 10px', background: 'white', borderTop: '1px solid #ddd',
         flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 6,
       }}>
-        {/* Row 1: GPS actions */}
+        {/* Row 1: GPS actions + CP list */}
         <div style={{ display: 'flex', gap: 6 }}>
           <button onClick={handleCurrentLocation} style={tbBtn('#2563eb', 'white')}>
             現在地表示
           </button>
           <button onClick={handlePlaceCpAtLocation} style={tbBtn('#e74c3c', 'white')}>
             現在地へCP設置
+          </button>
+          <button onClick={() => setModal({ type: 'cp-list' })} style={tbBtn('#f5f5f5', '#444')}>
+            CP一覧表示
           </button>
         </div>
         {/* Row 2: Survey memo */}
@@ -480,6 +491,14 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
           onSave={handleCpSave}
           onCancel={() => setModal({ type: 'none' })}
           onDelete={handleCpDelete}
+        />
+      )}
+
+      {modal.type === 'cp-list' && (
+        <CPListModal
+          cps={project.cps}
+          onSave={handleCpListSave}
+          onClose={() => setModal({ type: 'none' })}
         />
       )}
 
