@@ -25,51 +25,6 @@ type ModalState =
 const GSI_TILE_URL = 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png'
 const MAX_UNDO = 50
 
-async function drawOrienteeringImages(map: maplibregl.Map) {
-  const size = 32
-
-  const addImg = async (name: string, draw: (ctx: CanvasRenderingContext2D) => void) => {
-    if (map.hasImage(name)) return
-    const canvas = document.createElement('canvas')
-    canvas.width = size; canvas.height = size
-    draw(canvas.getContext('2d')!)
-    const bitmap = await createImageBitmap(canvas)
-    map.addImage(name, bitmap)
-  }
-
-  await addImg('cp-icon', ctx => {
-    ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 2.5
-    ctx.beginPath(); ctx.arc(size / 2, size / 2, 12, 0, Math.PI * 2); ctx.stroke()
-    ctx.fillStyle = '#c0392b'
-    ctx.beginPath(); ctx.arc(size / 2, size / 2, 2.5, 0, Math.PI * 2); ctx.fill()
-  })
-  await addImg('cpc-icon', ctx => {
-    ctx.strokeStyle = '#888'; ctx.lineWidth = 2
-    ctx.beginPath(); ctx.arc(size / 2, size / 2, 11, 0, Math.PI * 2); ctx.stroke()
-    ctx.fillStyle = '#888'
-    ctx.beginPath(); ctx.arc(size / 2, size / 2, 2, 0, Math.PI * 2); ctx.fill()
-  })
-  await addImg('cpc-start-icon', ctx => {
-    ctx.strokeStyle = '#888'; ctx.lineWidth = 2
-    ctx.beginPath(); ctx.moveTo(size / 2, 4); ctx.lineTo(size - 4, size - 4); ctx.lineTo(4, size - 4); ctx.closePath(); ctx.stroke()
-  })
-  await addImg('cpc-finish-icon', ctx => {
-    ctx.strokeStyle = '#888'; ctx.lineWidth = 2
-    ctx.beginPath(); ctx.arc(size / 2, size / 2, 13, 0, Math.PI * 2); ctx.stroke()
-    ctx.lineWidth = 1.5
-    ctx.beginPath(); ctx.arc(size / 2, size / 2, 7, 0, Math.PI * 2); ctx.stroke()
-  })
-  await addImg('cp-start-icon', ctx => {
-    ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 2.5
-    ctx.beginPath(); ctx.moveTo(size / 2, 4); ctx.lineTo(size - 4, size - 4); ctx.lineTo(4, size - 4); ctx.closePath(); ctx.stroke()
-  })
-  await addImg('cp-finish-icon', ctx => {
-    ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 2.5
-    ctx.beginPath(); ctx.arc(size / 2, size / 2, 13, 0, Math.PI * 2); ctx.stroke()
-    ctx.lineWidth = 2
-    ctx.beginPath(); ctx.arc(size / 2, size / 2, 7, 0, Math.PI * 2); ctx.stroke()
-  })
-}
 
 export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) {
   const mapContainer = useRef<HTMLDivElement>(null)
@@ -131,8 +86,7 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
       setMapZoom(map.getZoom())
     })
 
-    map.on('load', async () => {
-      await drawOrienteeringImages(map)
+    map.on('load', () => {
       initLayers(map)
       updateLayers(map, project, displayOptions)
     })
@@ -214,6 +168,14 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
       }
     }
 
+    const onEmptyClick = (e: maplibregl.MapMouseEvent) => {
+      const hit = map.queryRenderedFeatures(e.point, {
+        layers: ['cp-candidates', 'cps', 'survey-points', 'survey-lines', 'survey-areas'],
+      })
+      if (hit.length === 0) setSelectedMemoId(null)
+    }
+
+    map.on('click', onEmptyClick)
     map.on('click', 'cp-candidates', onCpcClick)
     map.on('click', 'cps', onCpClick)
     map.on('click', 'survey-points', onMemoClick)
@@ -231,6 +193,7 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
     map.on('mouseleave', 'survey-areas', () => { map.getCanvas().style.cursor = '' })
 
     return () => {
+      map.off('click', onEmptyClick)
       map.off('click', 'cp-candidates', onCpcClick)
       map.off('click', 'cps', onCpClick)
       map.off('click', 'survey-points', onMemoClick)
@@ -573,36 +536,46 @@ function initLayers(map: maplibregl.Map) {
     layout: { 'text-field': ['get', 'dist'], 'text-size': 11 },
     paint: { 'text-color': '#c0392b', 'text-halo-color': 'white', 'text-halo-width': 1.5 } })
 
-  // cp candidates
+  // CP candidates (grey outline circles)
   map.addSource('cp-candidates-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
-  map.addLayer({ id: 'cp-candidates', type: 'symbol', source: 'cp-candidates-src',
-    layout: {
-      'icon-image': ['case',
-        ['==', ['get', 'usage'], 'start'], 'cpc-start-icon',
-        ['==', ['get', 'usage'], 'goal'], 'cpc-finish-icon',
-        'cpc-icon',
-      ],
-      'icon-size': 1, 'icon-allow-overlap': true,
-      'text-field': ['case', ['==', ['get', 'usage'], 'cp'], ['to-string', ['get', 'number']], ''],
-      'text-size': 10, 'text-offset': [1.3, 0], 'text-anchor': 'left',
-    },
-    paint: { 'text-color': '#777', 'text-halo-color': 'white', 'text-halo-width': 1 }
+  map.addLayer({ id: 'cp-candidates', type: 'circle', source: 'cp-candidates-src',
+    paint: {
+      'circle-radius': 12,
+      'circle-color': 'rgba(0,0,0,0)',
+      'circle-stroke-color': '#888',
+      'circle-stroke-width': 2,
+    }
+  })
+  // inner ring for finish candidates (double circle)
+  map.addLayer({ id: 'cp-candidates-inner', type: 'circle', source: 'cp-candidates-src',
+    filter: ['any', ['==', ['get', 'usage'], 'goal'], ['==', ['get', 'usage'], 'both']],
+    paint: { 'circle-radius': 7, 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': '#888', 'circle-stroke-width': 1.5 }
+  })
+  // center dot for regular CPs and start
+  map.addLayer({ id: 'cp-candidates-dot', type: 'circle', source: 'cp-candidates-src',
+    filter: ['!', ['any', ['==', ['get', 'usage'], 'goal'], ['==', ['get', 'usage'], 'both']]],
+    paint: { 'circle-radius': 2.5, 'circle-color': '#888' }
   })
 
-  // cps
+  // Placed CPs (red outline circles)
   map.addSource('cps-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
-  map.addLayer({ id: 'cps', type: 'symbol', source: 'cps-src',
-    layout: {
-      'icon-image': ['case',
-        ['==', ['get', 'usage'], 'start'], 'cp-start-icon',
-        ['==', ['get', 'usage'], 'goal'], 'cp-finish-icon',
-        'cp-icon',
-      ],
-      'icon-size': 1, 'icon-allow-overlap': true,
-      'text-field': ['case', ['==', ['get', 'usage'], 'cp'], ['to-string', ['get', 'number']], ''],
-      'text-size': 11, 'text-offset': [1.3, 0], 'text-anchor': 'left',
-    },
-    paint: { 'text-color': '#c0392b', 'text-halo-color': 'white', 'text-halo-width': 1 }
+  map.addLayer({ id: 'cps', type: 'circle', source: 'cps-src',
+    paint: {
+      'circle-radius': 13,
+      'circle-color': 'rgba(0,0,0,0)',
+      'circle-stroke-color': '#c0392b',
+      'circle-stroke-width': 2.5,
+    }
+  })
+  // inner ring for placed finish CP (double circle)
+  map.addLayer({ id: 'cps-inner', type: 'circle', source: 'cps-src',
+    filter: ['any', ['==', ['get', 'usage'], 'goal'], ['==', ['get', 'usage'], 'both']],
+    paint: { 'circle-radius': 8, 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': '#c0392b', 'circle-stroke-width': 2 }
+  })
+  // center dot for placed CPs and start
+  map.addLayer({ id: 'cps-dot', type: 'circle', source: 'cps-src',
+    filter: ['!', ['any', ['==', ['get', 'usage'], 'goal'], ['==', ['get', 'usage'], 'both']]],
+    paint: { 'circle-radius': 3, 'circle-color': '#c0392b' }
   })
 
   // survey memos

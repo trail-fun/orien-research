@@ -10,35 +10,6 @@ interface Props {
 
 const GSI_TILE_URL = 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png'
 
-async function drawOrienteeringImages(map: maplibregl.Map) {
-  const size = 32
-
-  const addImg = async (name: string, draw: (ctx: CanvasRenderingContext2D) => void) => {
-    if (map.hasImage(name)) return
-    const canvas = document.createElement('canvas')
-    canvas.width = size; canvas.height = size
-    draw(canvas.getContext('2d')!)
-    const bitmap = await createImageBitmap(canvas)
-    map.addImage(name, bitmap)
-  }
-
-  await addImg('cpc-icon', ctx => {
-    ctx.strokeStyle = '#555'; ctx.lineWidth = 2.5
-    ctx.beginPath(); ctx.arc(size / 2, size / 2, 12, 0, Math.PI * 2); ctx.stroke()
-    ctx.fillStyle = '#555'
-    ctx.beginPath(); ctx.arc(size / 2, size / 2, 2.5, 0, Math.PI * 2); ctx.fill()
-  })
-  await addImg('cpc-start-icon', ctx => {
-    ctx.strokeStyle = '#555'; ctx.lineWidth = 2.5
-    ctx.beginPath(); ctx.moveTo(size / 2, 4); ctx.lineTo(size - 4, size - 4); ctx.lineTo(4, size - 4); ctx.closePath(); ctx.stroke()
-  })
-  await addImg('cpc-finish-icon', ctx => {
-    ctx.strokeStyle = '#555'; ctx.lineWidth = 2.5
-    ctx.beginPath(); ctx.arc(size / 2, size / 2, 13, 0, Math.PI * 2); ctx.stroke()
-    ctx.lineWidth = 1.8
-    ctx.beginPath(); ctx.arc(size / 2, size / 2, 8, 0, Math.PI * 2); ctx.stroke()
-  })
-}
 
 export function PrepareScreen({ onReady, existingProject }: Props) {
   const mapContainer = useRef<HTMLDivElement>(null)
@@ -75,8 +46,7 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left')
     mapRef.current = map
 
-    map.on('load', async () => {
-      await drawOrienteeringImages(map)
+    map.on('load', () => {
       initPrepareLayerSources(map)
       updatePrepareLayerSources(map, projectRef.current)
     })
@@ -309,21 +279,24 @@ function initPrepareLayerSources(map: maplibregl.Map) {
     paint: { 'text-color': '#555', 'text-halo-color': 'white', 'text-halo-width': 1.5 } })
 
   map.addSource('prep-candidates', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
-  map.addLayer({ id: 'prep-candidates', type: 'symbol', source: 'prep-candidates',
-    layout: {
-      'icon-image': ['case',
-        ['==', ['get', 'usage'], 'start'], 'cpc-start-icon',
-        ['==', ['get', 'usage'], 'goal'], 'cpc-finish-icon',
-        'cpc-icon'
-      ],
-      'icon-size': 1,
-      'icon-allow-overlap': true,
-      'text-field': ['case', ['==', ['get', 'usage'], 'cp'], ['to-string', ['get', 'number']], ''],
-      'text-size': 10,
-      'text-offset': [1.2, 0],
-      'text-anchor': 'left',
-    },
-    paint: { 'text-color': '#555', 'text-halo-color': 'white', 'text-halo-width': 1 }
+  // outer ring (all candidates)
+  map.addLayer({ id: 'prep-candidates', type: 'circle', source: 'prep-candidates',
+    paint: {
+      'circle-radius': 11,
+      'circle-color': 'rgba(0,0,0,0)',
+      'circle-stroke-color': '#666',
+      'circle-stroke-width': 2,
+    }
+  })
+  // inner ring for finish (double circle)
+  map.addLayer({ id: 'prep-candidates-inner', type: 'circle', source: 'prep-candidates',
+    filter: ['any', ['==', ['get', 'usage'], 'goal'], ['==', ['get', 'usage'], 'both']],
+    paint: { 'circle-radius': 6, 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': '#666', 'circle-stroke-width': 1.5 }
+  })
+  // center dot (regular CPs and start)
+  map.addLayer({ id: 'prep-candidates-dot', type: 'circle', source: 'prep-candidates',
+    filter: ['!', ['any', ['==', ['get', 'usage'], 'goal'], ['==', ['get', 'usage'], 'both']]],
+    paint: { 'circle-radius': 2.5, 'circle-color': '#666' }
   })
 }
 
