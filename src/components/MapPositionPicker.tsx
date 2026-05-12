@@ -48,7 +48,7 @@ export function MapPositionPicker({ mode, initialCoords, initialCenter, initialZ
         paint: { 'line-color': '#f59e0b', 'line-width': 3 } })
       map.addLayer({ id: 'preview-points', type: 'circle', source: 'preview',
         filter: ['==', ['geometry-type'], 'Point'],
-        paint: { 'circle-radius': 2, 'circle-color': 'white', 'circle-stroke-color': 'black', 'circle-stroke-width': 1.5 } })
+        paint: { 'circle-radius': 3, 'circle-color': 'white', 'circle-stroke-color': 'black', 'circle-stroke-width': 1.5 } })
 
       // draw initial coords if any
       updatePreview(map, coordsRef.current, mode)
