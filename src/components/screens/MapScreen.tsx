@@ -172,17 +172,46 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
     }
 
     const onEmptyClick = (e: maplibregl.MapMouseEvent) => {
-      const hit = map.queryRenderedFeatures(e.point, {
-        layers: ['cp-candidates', 'cps', 'survey-points', 'survey-lines', 'survey-areas'],
+      // Exact hit: CP and point/area memo layers
+      const exactHit = map.queryRenderedFeatures(e.point, {
+        layers: ['cp-candidates', 'cps', 'survey-points', 'survey-areas'],
       })
-      if (hit.length === 0) setSelectedMemoId(null)
+      if (exactHit.length > 0) return  // handled by layer-specific handlers
+
+      // Wide bbox for line detection (+/-15px for touch sensitivity)
+      const PAD = 15
+      const bboxPts: [maplibregl.PointLike, maplibregl.PointLike] = [
+        [e.point.x - PAD, e.point.y - PAD],
+        [e.point.x + PAD, e.point.y + PAD],
+      ]
+      const lineFeatures = map.queryRenderedFeatures(bboxPts, { layers: ['survey-lines'] })
+      if (lineFeatures.length > 0) {
+        const memoId = lineFeatures[0].properties?.id as string
+        if (memoLastClickId.current === memoId && memoClickTimer.current !== null) {
+          clearTimeout(memoClickTimer.current)
+          memoClickTimer.current = null
+          memoLastClickId.current = null
+          const memo = projectRef.current.surveyMemos.find(m => m.id === memoId)
+          if (memo) setModal({ type: 'survey-memo', objectType: memo.object_type, memo })
+        } else {
+          memoLastClickId.current = memoId
+          setSelectedMemoId(memoId)
+          if (memoClickTimer.current) clearTimeout(memoClickTimer.current)
+          memoClickTimer.current = setTimeout(() => {
+            memoClickTimer.current = null
+            memoLastClickId.current = null
+          }, 400)
+        }
+        return
+      }
+
+      setSelectedMemoId(null)
     }
 
     map.on('click', onEmptyClick)
     map.on('click', 'cp-candidates', onCpcClick)
     map.on('click', 'cps', onCpClick)
     map.on('click', 'survey-points', onMemoClick)
-    map.on('click', 'survey-lines', onMemoClick)
     map.on('click', 'survey-areas', onMemoClick)
     map.on('mouseenter', 'cp-candidates', () => { map.getCanvas().style.cursor = 'pointer' })
     map.on('mouseleave', 'cp-candidates', () => { map.getCanvas().style.cursor = '' })
@@ -200,7 +229,6 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
       map.off('click', 'cp-candidates', onCpcClick)
       map.off('click', 'cps', onCpClick)
       map.off('click', 'survey-points', onMemoClick)
-      map.off('click', 'survey-lines', onMemoClick)
       map.off('click', 'survey-areas', onMemoClick)
     }
   }, [])
