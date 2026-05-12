@@ -10,42 +10,42 @@ interface Props {
 
 const GSI_TILE_URL = 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png'
 
-function drawOrienteeringImages(map: maplibregl.Map) {
+async function drawOrienteeringImages(map: maplibregl.Map) {
   const size = 32
 
-  // CP: circle + center dot
-  const cpCanvas = document.createElement('canvas')
-  cpCanvas.width = size; cpCanvas.height = size
-  const cpCtx = cpCanvas.getContext('2d')!
-  cpCtx.strokeStyle = '#555'; cpCtx.lineWidth = 2.5
-  cpCtx.beginPath(); cpCtx.arc(size / 2, size / 2, 12, 0, Math.PI * 2); cpCtx.stroke()
-  cpCtx.fillStyle = '#555'
-  cpCtx.beginPath(); cpCtx.arc(size / 2, size / 2, 2.5, 0, Math.PI * 2); cpCtx.fill()
-  if (!map.hasImage('cpc-icon')) map.addImage('cpc-icon', cpCtx.getImageData(0, 0, size, size))
+  const addImg = async (name: string, draw: (ctx: CanvasRenderingContext2D) => void) => {
+    if (map.hasImage(name)) return
+    const canvas = document.createElement('canvas')
+    canvas.width = size; canvas.height = size
+    draw(canvas.getContext('2d')!)
+    const bitmap = await createImageBitmap(canvas)
+    map.addImage(name, bitmap)
+  }
 
-  // Start: triangle
-  const stCanvas = document.createElement('canvas')
-  stCanvas.width = size; stCanvas.height = size
-  const stCtx = stCanvas.getContext('2d')!
-  stCtx.strokeStyle = '#555'; stCtx.lineWidth = 2.5
-  stCtx.beginPath(); stCtx.moveTo(size / 2, 4); stCtx.lineTo(size - 4, size - 4); stCtx.lineTo(4, size - 4); stCtx.closePath(); stCtx.stroke()
-  if (!map.hasImage('cpc-start-icon')) map.addImage('cpc-start-icon', stCtx.getImageData(0, 0, size, size))
-
-  // Finish: double circle
-  const fnCanvas = document.createElement('canvas')
-  fnCanvas.width = size; fnCanvas.height = size
-  const fnCtx = fnCanvas.getContext('2d')!
-  fnCtx.strokeStyle = '#555'; fnCtx.lineWidth = 2.5
-  fnCtx.beginPath(); fnCtx.arc(size / 2, size / 2, 13, 0, Math.PI * 2); fnCtx.stroke()
-  fnCtx.lineWidth = 1.8
-  fnCtx.beginPath(); fnCtx.arc(size / 2, size / 2, 8, 0, Math.PI * 2); fnCtx.stroke()
-  if (!map.hasImage('cpc-finish-icon')) map.addImage('cpc-finish-icon', fnCtx.getImageData(0, 0, size, size))
+  await addImg('cpc-icon', ctx => {
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 2.5
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, 12, 0, Math.PI * 2); ctx.stroke()
+    ctx.fillStyle = '#555'
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, 2.5, 0, Math.PI * 2); ctx.fill()
+  })
+  await addImg('cpc-start-icon', ctx => {
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 2.5
+    ctx.beginPath(); ctx.moveTo(size / 2, 4); ctx.lineTo(size - 4, size - 4); ctx.lineTo(4, size - 4); ctx.closePath(); ctx.stroke()
+  })
+  await addImg('cpc-finish-icon', ctx => {
+    ctx.strokeStyle = '#555'; ctx.lineWidth = 2.5
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, 13, 0, Math.PI * 2); ctx.stroke()
+    ctx.lineWidth = 1.8
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, 8, 0, Math.PI * 2); ctx.stroke()
+  })
 }
 
 export function PrepareScreen({ onReady, existingProject }: Props) {
   const mapContainer = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
   const [project, setProject] = useState<ProjectData | null>(existingProject)
+  const projectRef = useRef(project)
+  projectRef.current = project
   const [cacheStatus, setCacheStatus] = useState<'idle' | 'caching' | 'done'>('idle')
   const [cacheProgress, setCacheProgress] = useState(0)
   const [error, setError] = useState<string | null>(null)
@@ -75,9 +75,10 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left')
     mapRef.current = map
 
-    map.on('load', () => {
-      drawOrienteeringImages(map)
+    map.on('load', async () => {
+      await drawOrienteeringImages(map)
       initPrepareLayerSources(map)
+      updatePrepareLayerSources(map, projectRef.current)
     })
 
     return () => {
@@ -94,13 +95,11 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
     return () => cancelAnimationFrame(id)
   }, [project])
 
-  // ---- update layers when project changes ----
+  // ---- update layers when project changes (map must already be loaded) ----
   useEffect(() => {
     const map = mapRef.current
-    if (!map) return
-    const update = () => updatePrepareLayerSources(map, project)
-    if (map.isStyleLoaded()) update()
-    else map.once('load', update)
+    if (!map || !map.isStyleLoaded()) return
+    updatePrepareLayerSources(map, project)
   }, [project])
 
   const showPrintArea = useCallback((print: PrintInfo) => {

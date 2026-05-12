@@ -25,58 +25,50 @@ type ModalState =
 const GSI_TILE_URL = 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png'
 const MAX_UNDO = 50
 
-function drawOrienteeringImages(map: maplibregl.Map) {
+async function drawOrienteeringImages(map: maplibregl.Map) {
   const size = 32
 
-  const cpCanvas = document.createElement('canvas')
-  cpCanvas.width = size; cpCanvas.height = size
-  const cpCtx = cpCanvas.getContext('2d')!
-  cpCtx.strokeStyle = '#c0392b'; cpCtx.lineWidth = 2.5
-  cpCtx.beginPath(); cpCtx.arc(size / 2, size / 2, 12, 0, Math.PI * 2); cpCtx.stroke()
-  cpCtx.fillStyle = '#c0392b'
-  cpCtx.beginPath(); cpCtx.arc(size / 2, size / 2, 2.5, 0, Math.PI * 2); cpCtx.fill()
-  if (!map.hasImage('cp-icon')) map.addImage('cp-icon', cpCtx.getImageData(0, 0, size, size))
+  const addImg = async (name: string, draw: (ctx: CanvasRenderingContext2D) => void) => {
+    if (map.hasImage(name)) return
+    const canvas = document.createElement('canvas')
+    canvas.width = size; canvas.height = size
+    draw(canvas.getContext('2d')!)
+    const bitmap = await createImageBitmap(canvas)
+    map.addImage(name, bitmap)
+  }
 
-  const cpcCanvas = document.createElement('canvas')
-  cpcCanvas.width = size; cpcCanvas.height = size
-  const cpcCtx = cpcCanvas.getContext('2d')!
-  cpcCtx.strokeStyle = '#888'; cpcCtx.lineWidth = 2
-  cpcCtx.beginPath(); cpcCtx.arc(size / 2, size / 2, 11, 0, Math.PI * 2); cpcCtx.stroke()
-  cpcCtx.fillStyle = '#888'
-  cpcCtx.beginPath(); cpcCtx.arc(size / 2, size / 2, 2, 0, Math.PI * 2); cpcCtx.fill()
-  if (!map.hasImage('cpc-icon')) map.addImage('cpc-icon', cpcCtx.getImageData(0, 0, size, size))
-
-  const stCanvas = document.createElement('canvas')
-  stCanvas.width = size; stCanvas.height = size
-  const stCtx = stCanvas.getContext('2d')!
-  stCtx.strokeStyle = '#888'; stCtx.lineWidth = 2
-  stCtx.beginPath(); stCtx.moveTo(size / 2, 4); stCtx.lineTo(size - 4, size - 4); stCtx.lineTo(4, size - 4); stCtx.closePath(); stCtx.stroke()
-  if (!map.hasImage('cpc-start-icon')) map.addImage('cpc-start-icon', stCtx.getImageData(0, 0, size, size))
-
-  const fnCanvas = document.createElement('canvas')
-  fnCanvas.width = size; fnCanvas.height = size
-  const fnCtx = fnCanvas.getContext('2d')!
-  fnCtx.strokeStyle = '#888'; fnCtx.lineWidth = 2
-  fnCtx.beginPath(); fnCtx.arc(size / 2, size / 2, 13, 0, Math.PI * 2); fnCtx.stroke()
-  fnCtx.lineWidth = 1.5
-  fnCtx.beginPath(); fnCtx.arc(size / 2, size / 2, 7, 0, Math.PI * 2); fnCtx.stroke()
-  if (!map.hasImage('cpc-finish-icon')) map.addImage('cpc-finish-icon', fnCtx.getImageData(0, 0, size, size))
-
-  const cpStCanvas = document.createElement('canvas')
-  cpStCanvas.width = size; cpStCanvas.height = size
-  const cpStCtx = cpStCanvas.getContext('2d')!
-  cpStCtx.strokeStyle = '#c0392b'; cpStCtx.lineWidth = 2.5
-  cpStCtx.beginPath(); cpStCtx.moveTo(size / 2, 4); cpStCtx.lineTo(size - 4, size - 4); cpStCtx.lineTo(4, size - 4); cpStCtx.closePath(); cpStCtx.stroke()
-  if (!map.hasImage('cp-start-icon')) map.addImage('cp-start-icon', cpStCtx.getImageData(0, 0, size, size))
-
-  const cpFnCanvas = document.createElement('canvas')
-  cpFnCanvas.width = size; cpFnCanvas.height = size
-  const cpFnCtx = cpFnCanvas.getContext('2d')!
-  cpFnCtx.strokeStyle = '#c0392b'; cpFnCtx.lineWidth = 2.5
-  cpFnCtx.beginPath(); cpFnCtx.arc(size / 2, size / 2, 13, 0, Math.PI * 2); cpFnCtx.stroke()
-  cpFnCtx.lineWidth = 2
-  cpFnCtx.beginPath(); cpFnCtx.arc(size / 2, size / 2, 7, 0, Math.PI * 2); cpFnCtx.stroke()
-  if (!map.hasImage('cp-finish-icon')) map.addImage('cp-finish-icon', cpFnCtx.getImageData(0, 0, size, size))
+  await addImg('cp-icon', ctx => {
+    ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 2.5
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, 12, 0, Math.PI * 2); ctx.stroke()
+    ctx.fillStyle = '#c0392b'
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, 2.5, 0, Math.PI * 2); ctx.fill()
+  })
+  await addImg('cpc-icon', ctx => {
+    ctx.strokeStyle = '#888'; ctx.lineWidth = 2
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, 11, 0, Math.PI * 2); ctx.stroke()
+    ctx.fillStyle = '#888'
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, 2, 0, Math.PI * 2); ctx.fill()
+  })
+  await addImg('cpc-start-icon', ctx => {
+    ctx.strokeStyle = '#888'; ctx.lineWidth = 2
+    ctx.beginPath(); ctx.moveTo(size / 2, 4); ctx.lineTo(size - 4, size - 4); ctx.lineTo(4, size - 4); ctx.closePath(); ctx.stroke()
+  })
+  await addImg('cpc-finish-icon', ctx => {
+    ctx.strokeStyle = '#888'; ctx.lineWidth = 2
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, 13, 0, Math.PI * 2); ctx.stroke()
+    ctx.lineWidth = 1.5
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, 7, 0, Math.PI * 2); ctx.stroke()
+  })
+  await addImg('cp-start-icon', ctx => {
+    ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 2.5
+    ctx.beginPath(); ctx.moveTo(size / 2, 4); ctx.lineTo(size - 4, size - 4); ctx.lineTo(4, size - 4); ctx.closePath(); ctx.stroke()
+  })
+  await addImg('cp-finish-icon', ctx => {
+    ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 2.5
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, 13, 0, Math.PI * 2); ctx.stroke()
+    ctx.lineWidth = 2
+    ctx.beginPath(); ctx.arc(size / 2, size / 2, 7, 0, Math.PI * 2); ctx.stroke()
+  })
 }
 
 export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) {
@@ -139,8 +131,8 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
       setMapZoom(map.getZoom())
     })
 
-    map.on('load', () => {
-      drawOrienteeringImages(map)
+    map.on('load', async () => {
+      await drawOrienteeringImages(map)
       initLayers(map)
       updateLayers(map, project, displayOptions)
     })
