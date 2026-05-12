@@ -5,6 +5,7 @@ import type {
   SurveyMemoObjectType, HistoryAction, PointStyle, LineStyle, AreaStyle,
 } from '../../types'
 import { generateId, haversine, formatDistance, sortByOrder } from '../../lib/geojson'
+import { parseS2Zip } from '../../lib/geojson'
 import { exportZip } from '../../lib/export'
 import { CPEditModal } from '../CPEditModal'
 import { CPCandidateInfoModal } from '../CPCandidateInfoModal'
@@ -379,11 +380,24 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
     setModal({ type: 'cp-edit', cp: newCp, candidate })
   }
 
-  // ---- export ----
+  // ---- export / import ----
   const handleExport = async () => {
     const areaName = project.metadata.area_name.replace(/\s/g, '_')
     const date = new Date().toISOString().slice(0, 10).replace(/-/g, '')
     await exportZip(project, `${areaName}_${date}_s2_v1.zip`)
+  }
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    e.target.value = ''
+    try {
+      const parsed = await parseS2Zip(file)
+      onProjectChange(parsed)
+      setShowMenu(false)
+    } catch (err) {
+      alert(`読み込みエラー: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   const toggleOption = (key: keyof typeof displayOptions) => {
@@ -439,10 +453,19 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
           <hr style={{ margin: '8px 0', border: 'none', borderTop: '1px solid #eee' }} />
           <button onClick={() => { handleExport(); setShowMenu(false) }} style={{
             width: '100%', padding: '8px', background: '#2d6a4f', color: 'white',
-            border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600
+            border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600,
+            marginBottom: 6,
           }}>
             📦 ZIPでエクスポート
           </button>
+          <label style={{
+            display: 'block', width: '100%', padding: '8px', background: '#f0faf4', color: '#2d6a4f',
+            border: '1px solid #c3e8d0', borderRadius: 6, cursor: 'pointer', fontSize: 13, fontWeight: 600,
+            textAlign: 'center', boxSizing: 'border-box',
+          }}>
+            📂 ZIPを読み込む
+            <input type="file" accept=".zip" onChange={handleImport} style={{ display: 'none' }} />
+          </label>
         </div>
       )}
 

@@ -1,12 +1,21 @@
 import { useState } from 'react'
 import type { Cp } from '../types'
-import { sortByOrder } from '../lib/geojson'
+import { sortByOrder, haversine, formatDistance } from '../lib/geojson'
 
 interface Props {
   cps: Cp[]
   onSave: (cps: Cp[]) => void
   onEdit: (cp: Cp) => void
   onClose: () => void
+}
+
+function calcTotalDistance(list: Cp[]): number {
+  let total = 0
+  for (let i = 1; i < list.length; i++) {
+    const a = list[i - 1]; const b = list[i]
+    total += haversine(a.coordinates[0], a.coordinates[1], b.coordinates[0], b.coordinates[1])
+  }
+  return total
 }
 
 export function CPListModal({ cps, onSave, onEdit, onClose }: Props) {
@@ -39,6 +48,8 @@ export function CPListModal({ cps, onSave, onEdit, onClose }: Props) {
     onSave(updated)
   }
 
+  const totalDist = calcTotalDistance(list)
+
   return (
     <div style={{
       position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
@@ -53,7 +64,14 @@ export function CPListModal({ cps, onSave, onEdit, onClose }: Props) {
           display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           padding: '14px 16px', borderBottom: '1px solid #eee', flexShrink: 0,
         }}>
-          <h2 style={{ margin: 0, fontSize: 16 }}>CP一覧</h2>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 16 }}>CP一覧</h2>
+            {list.length >= 2 && (
+              <div style={{ fontSize: 12, color: '#2d6a4f', marginTop: 2 }}>
+                合計距離: {formatDistance(totalDist)}
+              </div>
+            )}
+          </div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#888' }}>✕</button>
         </div>
 
@@ -67,6 +85,9 @@ export function CPListModal({ cps, onSave, onEdit, onClose }: Props) {
           {list.map((cp, i) => {
             const isStart = cp.usage === 'start'
             const isGoal  = cp.usage === 'goal'
+            const legDist = i > 0
+              ? haversine(list[i - 1].coordinates[0], list[i - 1].coordinates[1], cp.coordinates[0], cp.coordinates[1])
+              : null
             return (
               <div key={cp.id} style={{
                 display: 'flex', alignItems: 'center', gap: 8,
@@ -92,6 +113,11 @@ export function CPListModal({ cps, onSave, onEdit, onClose }: Props) {
                     <span style={{ fontSize: 12, color: '#888', fontWeight: 400, marginLeft: 6 }}>
                       {cp.score}点
                     </span>
+                    {legDist !== null && (
+                      <span style={{ fontSize: 11, color: '#2d6a4f', fontWeight: 400, marginLeft: 6 }}>
+                        ↑{formatDistance(legDist)}
+                      </span>
+                    )}
                   </div>
                   {cp.description ? (
                     <div style={{ fontSize: 12, color: '#555', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
