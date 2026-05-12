@@ -24,9 +24,9 @@ export default defineConfig({
         ],
       },
       manifest: {
-        name: '下見支援アプリ',
-        short_name: '下見',
-        description: 'オリエンテーリング下見支援PWA',
+        name: 'オリエン調査アプリ',
+        short_name: '調査',
+        description: 'オリエンテーリング調査支援PWA',
         theme_color: '#2d6a4f',
         background_color: '#ffffff',
         display: 'standalone',

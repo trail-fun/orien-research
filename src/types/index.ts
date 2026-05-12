@@ -2,7 +2,7 @@ export interface PrintInfo {
   scale: string
   size: string
   orientation: 'portrait' | 'landscape'
-  bbox: [number, number, number, number] // [west, south, east, north]
+  bbox: [number, number, number, number]
 }
 
 export interface S1Metadata {
@@ -50,6 +50,11 @@ export type LineCategory = 'トレイル' | 'フェンス' | '崖（線状）' |
 export type AreaCategory = '立入禁止区域' | '藪' | 'その他'
 export type MemoCategory = PointCategory | LineCategory | AreaCategory
 
+export interface PointStyle { size: number; color: string; opacity: number }
+export interface LineStyle  { width: number; color: string; opacity: number }
+export interface AreaStyle  { color: string; opacity: number }
+export type SurveyMemoStyle = PointStyle | LineStyle | AreaStyle
+
 export interface SurveyMemo {
   id: string
   type: 'survey_memo'
@@ -57,7 +62,9 @@ export interface SurveyMemo {
   category: MemoCategory
   memo: string
   photos: string[]
-  coordinates: [number, number] | [number, number][] | [number, number][][]
+  // point: [lng, lat] / line・area: [[lng, lat], ...]
+  coordinates: [number, number] | [number, number][]
+  style: SurveyMemoStyle
 }
 
 export interface ProjectData {
@@ -65,25 +72,7 @@ export interface ProjectData {
   cpCandidates: CpCandidate[]
   cps: Cp[]
   surveyMemos: SurveyMemo[]
-  photos: Record<string, string> // filename -> dataURL
-}
-
-export interface AppState {
-  screen: 'prepare' | 'map'
-  project: ProjectData | null
-  drawingMode: 'none' | 'point' | 'line' | 'area'
-  mapDisplayOptions: {
-    showCpCandidates: boolean
-    showCps: boolean
-    showPrintArea: boolean
-    showSurveyMemos: boolean
-    showCurrentLocation: boolean
-    locationTrackingMode: 'continuous' | 'manual'
-  }
-}
-
-export interface GpsFallbackType {
-  type: 'retry' | 'manual-input' | 'map-select'
+  photos: Record<string, string>
 }
 
 export type HistoryAction =

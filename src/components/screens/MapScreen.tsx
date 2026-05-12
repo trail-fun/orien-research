@@ -1,10 +1,13 @@
 import { useRef, useState, useEffect, useCallback } from 'react'
 import maplibregl from 'maplibre-gl'
-import type { ProjectData, Cp, CpCandidate, SurveyMemo, SurveyMemoObjectType, HistoryAction } from '../../types'
-import { generateId } from '../../lib/geojson'
+import type {
+  ProjectData, Cp, CpCandidate, SurveyMemo,
+  SurveyMemoObjectType, HistoryAction, PointStyle, LineStyle, AreaStyle,
+} from '../../types'
+import { generateId, haversine, formatDistance, sortByOrder } from '../../lib/geojson'
 import { exportZip } from '../../lib/export'
 import { CPEditModal } from '../CPEditModal'
-import { GPSFallbackModal } from '../GPSFallbackModal'
+import { CPCandidateInfoModal } from '../CPCandidateInfoModal'
 import { SurveyMemoModal } from '../SurveyMemoModal'
 
 interface Props {
@@ -13,64 +16,131 @@ interface Props {
   onBackToPrepare: () => void
 }
 
-type DrawMode = 'none' | 'point' | 'line' | 'area'
 type ModalState =
   | { type: 'none' }
   | { type: 'cp-edit'; cp: Cp; candidate?: CpCandidate }
-  | { type: 'cp-new'; acquired: { lat: number; lng: number; at: string }; candidate?: CpCandidate }
-  | { type: 'gps-fail'; afterFix: (lat: number, lng: number) => void }
-  | { type: 'map-select'; afterFix: (lat: number, lng: number) => void }
-  | { type: 'survey-new'; memo: SurveyMemo }
-  | { type: 'survey-edit'; memo: SurveyMemo }
-  | { type: 'position-select'; cp: Cp }
+  | { type: 'cp-candidate-info'; candidate: CpCandidate }
+  | { type: 'survey-memo'; objectType: SurveyMemoObjectType; memo: SurveyMemo | null }
 
 const GSI_TILE_URL = 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png'
 const MAX_UNDO = 50
 
+function drawOrienteeringImages(map: maplibregl.Map) {
+  const size = 32
+
+  const cpCanvas = document.createElement('canvas')
+  cpCanvas.width = size; cpCanvas.height = size
+  const cpCtx = cpCanvas.getContext('2d')!
+  cpCtx.strokeStyle = '#c0392b'; cpCtx.lineWidth = 2.5
+  cpCtx.beginPath(); cpCtx.arc(size / 2, size / 2, 12, 0, Math.PI * 2); cpCtx.stroke()
+  cpCtx.fillStyle = '#c0392b'
+  cpCtx.beginPath(); cpCtx.arc(size / 2, size / 2, 2.5, 0, Math.PI * 2); cpCtx.fill()
+  if (!map.hasImage('cp-icon')) map.addImage('cp-icon', cpCtx.getImageData(0, 0, size, size))
+
+  const cpcCanvas = document.createElement('canvas')
+  cpcCanvas.width = size; cpcCanvas.height = size
+  const cpcCtx = cpcCanvas.getContext('2d')!
+  cpcCtx.strokeStyle = '#888'; cpcCtx.lineWidth = 2
+  cpcCtx.beginPath(); cpcCtx.arc(size / 2, size / 2, 11, 0, Math.PI * 2); cpcCtx.stroke()
+  cpcCtx.fillStyle = '#888'
+  cpcCtx.beginPath(); cpcCtx.arc(size / 2, size / 2, 2, 0, Math.PI * 2); cpcCtx.fill()
+  if (!map.hasImage('cpc-icon')) map.addImage('cpc-icon', cpcCtx.getImageData(0, 0, size, size))
+
+  const stCanvas = document.createElement('canvas')
+  stCanvas.width = size; stCanvas.height = size
+  const stCtx = stCanvas.getContext('2d')!
+  stCtx.strokeStyle = '#888'; stCtx.lineWidth = 2
+  stCtx.beginPath(); stCtx.moveTo(size / 2, 4); stCtx.lineTo(size - 4, size - 4); stCtx.lineTo(4, size - 4); stCtx.closePath(); stCtx.stroke()
+  if (!map.hasImage('cpc-start-icon')) map.addImage('cpc-start-icon', stCtx.getImageData(0, 0, size, size))
+
+  const fnCanvas = document.createElement('canvas')
+  fnCanvas.width = size; fnCanvas.height = size
+  const fnCtx = fnCanvas.getContext('2d')!
+  fnCtx.strokeStyle = '#888'; fnCtx.lineWidth = 2
+  fnCtx.beginPath(); fnCtx.arc(size / 2, size / 2, 13, 0, Math.PI * 2); fnCtx.stroke()
+  fnCtx.lineWidth = 1.5
+  fnCtx.beginPath(); fnCtx.arc(size / 2, size / 2, 7, 0, Math.PI * 2); fnCtx.stroke()
+  if (!map.hasImage('cpc-finish-icon')) map.addImage('cpc-finish-icon', fnCtx.getImageData(0, 0, size, size))
+
+  const cpStCanvas = document.createElement('canvas')
+  cpStCanvas.width = size; cpStCanvas.height = size
+  const cpStCtx = cpStCanvas.getContext('2d')!
+  cpStCtx.strokeStyle = '#c0392b'; cpStCtx.lineWidth = 2.5
+  cpStCtx.beginPath(); cpStCtx.moveTo(size / 2, 4); cpStCtx.lineTo(size - 4, size - 4); cpStCtx.lineTo(4, size - 4); cpStCtx.closePath(); cpStCtx.stroke()
+  if (!map.hasImage('cp-start-icon')) map.addImage('cp-start-icon', cpStCtx.getImageData(0, 0, size, size))
+
+  const cpFnCanvas = document.createElement('canvas')
+  cpFnCanvas.width = size; cpFnCanvas.height = size
+  const cpFnCtx = cpFnCanvas.getContext('2d')!
+  cpFnCtx.strokeStyle = '#c0392b'; cpFnCtx.lineWidth = 2.5
+  cpFnCtx.beginPath(); cpFnCtx.arc(size / 2, size / 2, 13, 0, Math.PI * 2); cpFnCtx.stroke()
+  cpFnCtx.lineWidth = 2
+  cpFnCtx.beginPath(); cpFnCtx.arc(size / 2, size / 2, 7, 0, Math.PI * 2); cpFnCtx.stroke()
+  if (!map.hasImage('cp-finish-icon')) map.addImage('cp-finish-icon', cpFnCtx.getImageData(0, 0, size, size))
+}
+
 export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) {
   const mapContainer = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
-  const cursorMarker = useRef<maplibregl.Marker | null>(null)
   const userMarker = useRef<maplibregl.Marker | null>(null)
+
+  const [modal, setModal] = useState<ModalState>({ type: 'none' })
+  const [showMenu, setShowMenu] = useState(false)
+  const [history, setHistory] = useState<HistoryAction[]>([])
+  const [, setRedoStack] = useState<HistoryAction[]>([])
+  const [selectedMemoId, setSelectedMemoId] = useState<string | null>(null)
+  const [mapCenter, setMapCenter] = useState<[number, number]>(() => {
+    const bb = project.metadata.print?.bbox
+    return bb ? [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2] : [136.0, 36.0]
+  })
+  const [mapZoom, setMapZoom] = useState(14)
 
   const [displayOptions, setDisplayOptions] = useState({
     showCpCandidates: true,
     showCps: true,
     showPrintArea: true,
     showSurveyMemos: true,
-    showCurrentLocation: false,
+    showCpLines: true,
   })
-  const [drawMode, setDrawMode] = useState<DrawMode>('none')
-  const [drawingCoords, setDrawingCoords] = useState<[number, number][]>([])
-  const [modal, setModal] = useState<ModalState>({ type: 'none' })
-  const [showMenu, setShowMenu] = useState(false)
-  const [history, setHistory] = useState<HistoryAction[]>([])
-  const [, setRedoStack] = useState<HistoryAction[]>([])
+
   const projectRef = useRef(project)
   projectRef.current = project
+  const selectedMemoIdRef = useRef(selectedMemoId)
+  selectedMemoIdRef.current = selectedMemoId
+
+  // single-click timer for survey memo double-click detection
+  const memoClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const memoLastClickId = useRef<string | null>(null)
 
   // ---- map init ----
   useEffect(() => {
     if (!mapContainer.current) return
+    const bb = project.metadata.print?.bbox
+    const center: [number, number] = bb
+      ? [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2]
+      : [136.0, 36.0]
+
     const map = new maplibregl.Map({
       container: mapContainer.current,
       style: {
         version: 8,
-        sources: {
-          gsi: { type: 'raster', tiles: [GSI_TILE_URL], tileSize: 256, attribution: '© 国土地理院' }
-        },
+        sources: { gsi: { type: 'raster', tiles: [GSI_TILE_URL], tileSize: 256, attribution: '© 国土地理院' } },
         layers: [{ id: 'gsi', type: 'raster', source: 'gsi' }],
       },
-      center: project.metadata.print.bbox
-        ? [(project.metadata.print.bbox[0] + project.metadata.print.bbox[2]) / 2,
-           (project.metadata.print.bbox[1] + project.metadata.print.bbox[3]) / 2]
-        : [136.0, 36.0],
+      center,
       zoom: 14,
     })
     map.addControl(new maplibregl.NavigationControl(), 'top-right')
     mapRef.current = map
 
+    map.on('move', () => {
+      const c = map.getCenter()
+      setMapCenter([c.lng, c.lat])
+      setMapZoom(map.getZoom())
+    })
+
     map.on('load', () => {
+      drawOrienteeringImages(map)
       initLayers(map)
       updateLayers(map, project, displayOptions)
     })
@@ -81,45 +151,33 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ---- layer update when project changes ----
+  // ---- layer update when project / options change ----
   useEffect(() => {
     const map = mapRef.current
     if (!map || !map.isStyleLoaded()) return
     updateLayers(map, project, displayOptions)
   }, [project, displayOptions])
 
-  // ---- map click ----
+  // ---- survey memo selection highlight ----
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !map.isStyleLoaded()) return
+    map.setFilter('survey-points-selected', selectedMemoId
+      ? ['==', ['get', 'id'], selectedMemoId]
+      : ['==', ['get', 'id'], ''])
+    map.setFilter('survey-lines-selected', selectedMemoId
+      ? ['==', ['get', 'id'], selectedMemoId]
+      : ['==', ['get', 'id'], ''])
+    map.setFilter('survey-areas-selected', selectedMemoId
+      ? ['==', ['get', 'id'], selectedMemoId]
+      : ['==', ['get', 'id'], ''])
+  }, [selectedMemoId])
+
+  // ---- layer click handlers ----
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
 
-    const onClick = (e: maplibregl.MapMouseEvent) => {
-      const lngLat = e.lngLat
-      if (drawMode === 'none') {
-        // Check clicks on CP candidates / CPs (handled by layer click below)
-        return
-      }
-      if (drawMode === 'point') {
-        const coords: [number, number] = [lngLat.lng, lngLat.lat]
-        const id = generateId('sm_', projectRef.current.surveyMemos.map(m => m.id))
-        const newMemo: SurveyMemo = {
-          id, type: 'survey_memo', object_type: 'point',
-          category: '岩', memo: '', photos: [], coordinates: coords
-        }
-        setModal({ type: 'survey-new', memo: newMemo })
-      } else if (drawMode === 'line' || drawMode === 'area') {
-        setDrawingCoords(prev => [...prev, [lngLat.lng, lngLat.lat]])
-      }
-    }
-
-    map.on('click', onClick)
-    return () => { map.off('click', onClick) }
-  }, [drawMode])
-
-  // ---- CP candidate layer click ----
-  useEffect(() => {
-    const map = mapRef.current
-    if (!map) return
     const onCpcClick = (e: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
       e.preventDefault()
       const f = e.features?.[0]
@@ -127,34 +185,8 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
       const cpcId = f.properties?.id as string
       const cpc = projectRef.current.cpCandidates.find(c => c.id === cpcId)
       if (!cpc) return
-
-      const existing = projectRef.current.cps.find(cp => cp.source_candidate_id === cpcId)
-      if (existing) {
-        setModal({ type: 'cp-edit', cp: existing, candidate: cpc })
-      } else {
-        // Show candidate info with option to place CP
-        setModal({
-          type: 'gps-fail',
-          afterFix: (lat, lng) => {
-            const id = generateId('cp_', projectRef.current.cps.map(c => c.id))
-            const now = new Date().toISOString()
-            const newCp: Cp = {
-              id, type: 'cp', number: cpc.number, usage: cpc.usage, order: cpc.order,
-              score: cpc.score, acquired_lat: lat, acquired_lng: lng, acquired_at: now,
-              description: '', memo: cpc.memo, photos: [], source_candidate_id: cpc.id,
-              coordinates: [lng, lat]
-            }
-            setModal({ type: 'cp-new', acquired: { lat, lng, at: now }, candidate: cpc })
-            // Pre-fill with GPS
-            setModal({ type: 'cp-edit', cp: newCp, candidate: cpc })
-          }
-        })
-      }
+      setModal({ type: 'cp-candidate-info', candidate: cpc })
     }
-
-    map.on('click', 'cp-candidates', onCpcClick)
-    map.on('mouseenter', 'cp-candidates', () => { map.getCanvas().style.cursor = 'pointer' })
-    map.on('mouseleave', 'cp-candidates', () => { map.getCanvas().style.cursor = '' })
 
     const onCpClick = (e: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
       e.preventDefault()
@@ -165,22 +197,46 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
       if (cp) setModal({ type: 'cp-edit', cp })
     }
 
-    map.on('click', 'cps', onCpClick)
-    map.on('mouseenter', 'cps', () => { map.getCanvas().style.cursor = 'pointer' })
-    map.on('mouseleave', 'cps', () => { map.getCanvas().style.cursor = '' })
-
     const onMemoClick = (e: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
       e.preventDefault()
       const f = e.features?.[0]
       if (!f) return
       const memoId = f.properties?.id as string
-      const memo = projectRef.current.surveyMemos.find(m => m.id === memoId)
-      if (memo) setModal({ type: 'survey-edit', memo })
+
+      if (memoLastClickId.current === memoId && memoClickTimer.current !== null) {
+        // double-click: open edit
+        clearTimeout(memoClickTimer.current)
+        memoClickTimer.current = null
+        memoLastClickId.current = null
+        const memo = projectRef.current.surveyMemos.find(m => m.id === memoId)
+        if (memo) setModal({ type: 'survey-memo', objectType: memo.object_type, memo })
+      } else {
+        // first click: select
+        memoLastClickId.current = memoId
+        setSelectedMemoId(memoId)
+        if (memoClickTimer.current) clearTimeout(memoClickTimer.current)
+        memoClickTimer.current = setTimeout(() => {
+          memoClickTimer.current = null
+          memoLastClickId.current = null
+        }, 400)
+      }
     }
 
+    map.on('click', 'cp-candidates', onCpcClick)
+    map.on('click', 'cps', onCpClick)
     map.on('click', 'survey-points', onMemoClick)
     map.on('click', 'survey-lines', onMemoClick)
     map.on('click', 'survey-areas', onMemoClick)
+    map.on('mouseenter', 'cp-candidates', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'cp-candidates', () => { map.getCanvas().style.cursor = '' })
+    map.on('mouseenter', 'cps', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'cps', () => { map.getCanvas().style.cursor = '' })
+    map.on('mouseenter', 'survey-points', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'survey-points', () => { map.getCanvas().style.cursor = '' })
+    map.on('mouseenter', 'survey-lines', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'survey-lines', () => { map.getCanvas().style.cursor = '' })
+    map.on('mouseenter', 'survey-areas', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'survey-areas', () => { map.getCanvas().style.cursor = '' })
 
     return () => {
       map.off('click', 'cp-candidates', onCpcClick)
@@ -191,45 +247,53 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
     }
   }, [])
 
-  // ---- GPS location ----
-  const getCurrentLocation = useCallback((onSuccess: (lat: number, lng: number) => void) => {
+  // ---- GPS ----
+  const handleCurrentLocation = useCallback(() => {
+    const map = mapRef.current
+    if (!map) return
     navigator.geolocation.getCurrentPosition(
-      pos => onSuccess(pos.coords.latitude, pos.coords.longitude),
-      () => setModal({
-        type: 'gps-fail',
-        afterFix: onSuccess
-      }),
+      pos => {
+        const { latitude: lat, longitude: lng } = pos.coords
+        map.flyTo({ center: [lng, lat], zoom: 16 })
+        if (userMarker.current) {
+          userMarker.current.setLngLat([lng, lat])
+        } else {
+          const el = document.createElement('div')
+          el.style.cssText = [
+            'width:28px;height:28px;position:relative;',
+            'display:flex;align-items:center;justify-content:center;',
+          ].join('')
+          el.innerHTML = `<svg width="28" height="28" viewBox="0 0 28 28">
+            <line x1="14" y1="2" x2="14" y2="26" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round"/>
+            <line x1="2" y1="14" x2="26" y2="14" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round"/>
+          </svg>`
+          userMarker.current = new maplibregl.Marker({ element: el, anchor: 'center' })
+            .setLngLat([lng, lat]).addTo(map)
+        }
+      },
+      () => alert('GPS信号を取得できませんでした'),
       { enableHighAccuracy: true, timeout: 10000 }
     )
   }, [])
 
-  const handlePlaceCp = useCallback(() => {
-    getCurrentLocation((lat, lng) => {
-      const id = generateId('cp_', projectRef.current.cps.map(c => c.id))
-      const now = new Date().toISOString()
-      const newCp: Cp = {
-        id, type: 'cp', number: projectRef.current.cps.length + 1, usage: 'cp', order: 0,
-        score: 10, acquired_lat: lat, acquired_lng: lng, acquired_at: now,
-        description: '', memo: '', photos: [], coordinates: [lng, lat]
-      }
-      setModal({ type: 'cp-edit', cp: newCp })
-    })
-  }, [getCurrentLocation])
-
-  const handleCurrentLocation = useCallback(() => {
-    getCurrentLocation((lat, lng) => {
-      const map = mapRef.current
-      if (!map) return
-      map.flyTo({ center: [lng, lat], zoom: 16 })
-      if (userMarker.current) {
-        userMarker.current.setLngLat([lng, lat])
-      } else {
-        const el = document.createElement('div')
-        el.style.cssText = 'width:16px;height:16px;background:#2563eb;border:3px solid white;border-radius:50%;box-shadow:0 0 0 2px #2563eb'
-        userMarker.current = new maplibregl.Marker({ element: el }).setLngLat([lng, lat]).addTo(map)
-      }
-    })
-  }, [getCurrentLocation])
+  const handlePlaceCpAtLocation = useCallback(() => {
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        const { latitude: lat, longitude: lng } = pos.coords
+        const p = projectRef.current
+        const id = generateId('cp_', p.cps.map(c => c.id))
+        const now = new Date().toISOString()
+        const newCp: Cp = {
+          id, type: 'cp', number: p.cps.length + 1, usage: 'cp', order: p.cps.length + 1,
+          score: 10, acquired_lat: lat, acquired_lng: lng, acquired_at: now,
+          description: '', memo: '', photos: [], coordinates: [lng, lat]
+        }
+        setModal({ type: 'cp-edit', cp: newCp })
+      },
+      () => alert('GPS信号を取得できませんでした'),
+      { enableHighAccuracy: true, timeout: 10000 }
+    )
+  }, [])
 
   // ---- Undo ----
   const pushHistory = useCallback((action: HistoryAction) => {
@@ -237,18 +301,7 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
     setRedoStack([])
   }, [])
 
-  const handleUndo = useCallback(() => {
-    setHistory(prev => {
-      if (prev.length === 0) return prev
-      const last = prev[prev.length - 1]
-      const next = prev.slice(0, -1)
-      setRedoStack(r => [last, ...r])
-      applyUndo(last)
-      return next
-    })
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const applyUndo = (action: HistoryAction) => {
+  const applyUndo = useCallback((action: HistoryAction) => {
     const p = projectRef.current
     switch (action.type) {
       case 'ADD_CP':
@@ -270,9 +323,19 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
         onProjectChange({ ...p, surveyMemos: [...p.surveyMemos, action.memo] })
         break
     }
-  }
+  }, [onProjectChange])
 
-  // ---- keyboard undo ----
+  const handleUndo = useCallback(() => {
+    setHistory(prev => {
+      if (prev.length === 0) return prev
+      const last = prev[prev.length - 1]
+      const next = prev.slice(0, -1)
+      setRedoStack(r => [last, ...r])
+      applyUndo(last)
+      return next
+    })
+  }, [applyUndo])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'z') { e.preventDefault(); handleUndo() }
@@ -317,6 +380,7 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
       onProjectChange({ ...p, surveyMemos: [...p.surveyMemos, memo] })
     }
     setModal({ type: 'none' })
+    setSelectedMemoId(null)
   }
 
   const handleMemoDelete = (id: string) => {
@@ -327,45 +391,27 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
       onProjectChange({ ...p, surveyMemos: p.surveyMemos.filter(m => m.id !== id) })
     }
     setModal({ type: 'none' })
+    setSelectedMemoId(null)
   }
 
-  // ---- finish line/area ----
-  const finishDrawing = () => {
-    if (drawingCoords.length < 2) { setDrawingCoords([]); return }
-    const id = generateId('sm_', projectRef.current.surveyMemos.map(m => m.id))
-    const objType: SurveyMemoObjectType = drawMode === 'line' ? 'line' : 'area'
-    const newMemo: SurveyMemo = {
-      id, type: 'survey_memo', object_type: objType,
-      category: drawMode === 'line' ? 'トレイル' : '立入禁止区域',
-      memo: '', photos: [], coordinates: drawingCoords
+  // ---- place CP from candidate info modal ----
+  const handlePlaceCpFromCandidate = (candidate: CpCandidate) => {
+    const p = projectRef.current
+    const existing = p.cps.find(c => c.source_candidate_id === candidate.id)
+    if (existing) {
+      setModal({ type: 'cp-edit', cp: existing, candidate })
+      return
     }
-    setModal({ type: 'survey-new', memo: newMemo })
-    setDrawingCoords([])
-  }
-
-  // ---- position select mode ----
-  const handlePositionSelect = (cp: Cp) => {
-    setModal({ type: 'position-select', cp })
-    const map = mapRef.current
-    if (!map) return
-    // Show crosshair cursor marker at current cp position
-    if (cursorMarker.current) cursorMarker.current.remove()
-    const el = document.createElement('div')
-    el.innerHTML = '＋'
-    el.style.cssText = 'font-size:32px;color:#e74c3c;text-shadow:0 0 3px white;pointer-events:none;line-height:1'
-    cursorMarker.current = new maplibregl.Marker({ element: el, anchor: 'center' })
-      .setLngLat(cp.coordinates)
-      .addTo(map)
-  }
-
-  const confirmPositionSelect = () => {
-    if (modal.type !== 'position-select') return
-    const map = mapRef.current
-    if (!map) return
-    const center = map.getCenter()
-    const updated: Cp = { ...modal.cp, coordinates: [center.lng, center.lat] }
-    if (cursorMarker.current) { cursorMarker.current.remove(); cursorMarker.current = null }
-    setModal({ type: 'cp-edit', cp: updated })
+    const id = generateId('cp_', p.cps.map(c => c.id))
+    const now = new Date().toISOString()
+    const [lng, lat] = candidate.coordinates
+    const newCp: Cp = {
+      id, type: 'cp', number: candidate.number, usage: candidate.usage, order: candidate.order,
+      score: candidate.score, acquired_lat: lat, acquired_lng: lng, acquired_at: now,
+      description: '', memo: candidate.memo, photos: [],
+      source_candidate_id: candidate.id, coordinates: candidate.coordinates,
+    }
+    setModal({ type: 'cp-edit', cp: newCp, candidate })
   }
 
   // ---- export ----
@@ -378,14 +424,6 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
   const toggleOption = (key: keyof typeof displayOptions) => {
     setDisplayOptions(prev => ({ ...prev, [key]: !prev[key] }))
   }
-
-  const setMemoDrawMode = (mode: DrawMode) => {
-    setDrawMode(prev => prev === mode ? 'none' : mode)
-    setDrawingCoords([])
-  }
-
-  // Capture drawMode before JSX to avoid TypeScript narrowing in ternary branches
-  const dm: DrawMode = drawMode
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' }}>
@@ -424,9 +462,9 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
           {([
             ['showCpCandidates', 'CP候補を表示'],
             ['showCps', '設置CPを表示'],
+            ['showCpLines', 'CP間の線・距離を表示'],
             ['showPrintArea', '印刷範囲を表示'],
             ['showSurveyMemos', '調査メモを表示'],
-            ['showCurrentLocation', '現在地を表示'],
           ] as [keyof typeof displayOptions, string][]).map(([key, label]) => (
             <label key={key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', cursor: 'pointer', fontSize: 14 }}>
               <input type="checkbox" checked={displayOptions[key]} onChange={() => toggleOption(key)} />
@@ -444,111 +482,71 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
       )}
 
       {/* Map */}
-      <div ref={mapContainer} style={{ flex: 1, position: 'relative' }}>
-        {/* Position select overlay */}
-        {modal.type === 'position-select' && (
-          <div style={{
-            position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            pointerEvents: 'none', zIndex: 50
-          }}>
-            <div style={{ fontSize: 40, color: '#e74c3c', textShadow: '0 0 4px white', lineHeight: 1 }}>＋</div>
-          </div>
-        )}
-      </div>
+      <div ref={mapContainer} style={{ flex: 1, position: 'relative' }} />
 
-      {/* Bottom toolbar */}
+      {/* Bottom toolbar — 2 rows */}
       <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-around',
-        padding: '8px 12px', background: 'white', borderTop: '1px solid #ddd',
-        flexShrink: 0, flexWrap: 'wrap', gap: 6
+        padding: '8px 10px', background: 'white', borderTop: '1px solid #ddd',
+        flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 6,
       }}>
-        {modal.type === 'position-select' ? (
-          <div style={{ display: 'flex', gap: 8, width: '100%' }}>
-            <button onClick={() => { if (cursorMarker.current) { cursorMarker.current.remove(); cursorMarker.current = null }; setModal({ type: 'none' }) }}
-              style={tbBtn('#f5f5f5', '#444')}>キャンセル</button>
-            <button onClick={confirmPositionSelect} style={{ ...tbBtn('#2d6a4f', 'white'), flex: 2 }}>
-              この位置に設置
-            </button>
-          </div>
-        ) : drawMode !== 'none' ? (
-          <div style={{ display: 'flex', gap: 8, width: '100%', alignItems: 'center' }}>
-            <span style={{ fontSize: 13, color: '#666', flex: 1 }}>
-              {drawMode === 'point' ? 'タップで配置' : drawMode === 'line' ? `${drawingCoords.length}点 — タップで追加` : `${drawingCoords.length}点 — タップで追加（最初の点で閉じる）`}
-            </span>
-            {(drawMode === 'line' || drawMode === 'area') && drawingCoords.length >= 2 && (
-              <button onClick={finishDrawing} style={tbBtn('#2d6a4f', 'white')}>完了</button>
-            )}
-            <button onClick={() => { setDrawMode('none'); setDrawingCoords([]) }} style={tbBtn('#f5f5f5', '#444')}>
-              キャンセル
-            </button>
-          </div>
-        ) : (
-          <>
-            <button onClick={handlePlaceCp} style={tbBtn('#e74c3c', 'white')}>
-              📍 CP設置
-            </button>
-            <button onClick={handleCurrentLocation} style={tbBtn('#2563eb', 'white')}>
-              🎯 現在地
-            </button>
-            <button onClick={() => setMemoDrawMode('point')} style={tbBtn(dm === 'point' ? '#f59e0b' : '#f5f5f5', dm === 'point' ? 'white' : '#444')}>
-              ● ポイント
-            </button>
-            <button onClick={() => setMemoDrawMode('line')} style={tbBtn(dm === 'line' ? '#f59e0b' : '#f5f5f5', dm === 'line' ? 'white' : '#444')}>
-              ∿ ライン
-            </button>
-            <button onClick={() => setMemoDrawMode('area')} style={tbBtn(dm === 'area' ? '#f59e0b' : '#f5f5f5', dm === 'area' ? 'white' : '#444')}>
-              ▭ エリア
-            </button>
-          </>
-        )}
+        {/* Row 1: GPS actions */}
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={handleCurrentLocation} style={tbBtn('#2563eb', 'white')}>
+            現在地表示
+          </button>
+          <button onClick={handlePlaceCpAtLocation} style={tbBtn('#e74c3c', 'white')}>
+            現在地へCP設置
+          </button>
+        </div>
+        {/* Row 2: Survey memo */}
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={() => setModal({ type: 'survey-memo', objectType: 'point', memo: null })}
+            style={tbBtn('#f5f5f5', '#444')}>
+            ● ポイント追加
+          </button>
+          <button onClick={() => setModal({ type: 'survey-memo', objectType: 'line', memo: null })}
+            style={tbBtn('#f5f5f5', '#444')}>
+            ∿ ライン追加
+          </button>
+          <button onClick={() => setModal({ type: 'survey-memo', objectType: 'area', memo: null })}
+            style={tbBtn('#f5f5f5', '#444')}>
+            ▭ エリア追加
+          </button>
+        </div>
       </div>
 
       {/* Modals */}
-      {(modal.type === 'cp-edit') && (
+      {modal.type === 'cp-edit' && (
         <CPEditModal
           cp={modal.cp}
           candidate={modal.candidate}
+          mapCenter={mapCenter}
+          mapZoom={mapZoom}
           onSave={handleCpSave}
           onCancel={() => setModal({ type: 'none' })}
           onDelete={handleCpDelete}
-          onPositionSelect={handlePositionSelect}
         />
       )}
 
-      {modal.type === 'gps-fail' && (
-        <GPSFallbackModal
-          onRetry={() => {
-            setModal({ type: 'none' })
-            setTimeout(handlePlaceCp, 100)
-          }}
-          onManualInput={(lat, lng) => {
-            setModal({ type: 'none' })
-            modal.afterFix(lat, lng)
-          }}
-          onMapSelect={() => {
-            const afterFix = modal.afterFix
-            setModal({ type: 'position-select', cp: {
-              id: '', type: 'cp', number: 0, usage: 'cp', order: 0, score: 10,
-              acquired_lat: 0, acquired_lng: 0, acquired_at: new Date().toISOString(),
-              description: '', memo: '', photos: [],
-              coordinates: mapRef.current ? [mapRef.current.getCenter().lng, mapRef.current.getCenter().lat] : [136, 36]
-            }})
-            // Override confirmPositionSelect for this flow
-            const origConfirm = confirmPositionSelect
-            void origConfirm
-            const map = mapRef.current
-            if (map) afterFix(map.getCenter().lat, map.getCenter().lng)
-          }}
-          onCancel={() => setModal({ type: 'none' })}
+      {modal.type === 'cp-candidate-info' && (
+        <CPCandidateInfoModal
+          candidate={modal.candidate}
+          onClose={() => setModal({ type: 'none' })}
+          onPlaceCp={() => handlePlaceCpFromCandidate(modal.candidate)}
         />
       )}
 
-      {(modal.type === 'survey-new' || modal.type === 'survey-edit') && (
+      {modal.type === 'survey-memo' && (
         <SurveyMemoModal
           memo={modal.memo}
+          objectType={modal.objectType}
+          projectBbox={project.metadata.print?.bbox}
+          mapCenter={mapCenter}
+          mapZoom={mapZoom}
+          existingIds={project.surveyMemos.map(m => m.id)}
           onSave={handleMemoSave}
           onCancel={() => setModal({ type: 'none' })}
-          onDelete={modal.type === 'survey-edit' ? handleMemoDelete : undefined}
+          onDelete={modal.memo ? handleMemoDelete : undefined}
         />
       )}
 
@@ -561,63 +559,136 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
 
 function tbBtn(bg: string, color: string): React.CSSProperties {
   return {
-    padding: '8px 12px', background: bg, color, border: 'none',
-    borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600, flex: 1, minWidth: 70
+    flex: 1, padding: '9px 4px', background: bg, color, border: 'none',
+    borderRadius: 8, cursor: 'pointer', fontSize: 13, fontWeight: 600,
   }
 }
 
 function initLayers(map: maplibregl.Map) {
   // print bbox
   map.addSource('print-bbox', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
-  map.addLayer({ id: 'print-bbox-fill', type: 'fill', source: 'print-bbox', paint: { 'fill-color': '#2d6a4f', 'fill-opacity': 0.05 } })
-  map.addLayer({ id: 'print-bbox-line', type: 'line', source: 'print-bbox', paint: { 'line-color': '#2d6a4f', 'line-width': 2, 'line-dasharray': [4, 2] } })
+  map.addLayer({ id: 'print-bbox-fill', type: 'fill', source: 'print-bbox',
+    paint: { 'fill-color': '#2d6a4f', 'fill-opacity': 0.05 } })
+  map.addLayer({ id: 'print-bbox-line', type: 'line', source: 'print-bbox',
+    paint: { 'line-color': '#2d6a4f', 'line-width': 2, 'line-dasharray': [4, 2] } })
+
+  // CP lines between placed CPs
+  map.addSource('cp-lines', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+  map.addLayer({ id: 'cp-lines', type: 'line', source: 'cp-lines',
+    paint: { 'line-color': '#c0392b', 'line-width': 1.5, 'line-dasharray': [5, 3], 'line-opacity': 0.7 } })
+  map.addSource('cp-dist', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+  map.addLayer({ id: 'cp-dist', type: 'symbol', source: 'cp-dist',
+    layout: { 'text-field': ['get', 'dist'], 'text-size': 11 },
+    paint: { 'text-color': '#c0392b', 'text-halo-color': 'white', 'text-halo-width': 1.5 } })
 
   // cp candidates
   map.addSource('cp-candidates-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
-  map.addLayer({ id: 'cp-candidates', type: 'circle', source: 'cp-candidates-src', paint: {
-    'circle-radius': 10, 'circle-color': '#aaa', 'circle-opacity': 0.8, 'circle-stroke-width': 2, 'circle-stroke-color': '#666'
-  }})
-  map.addLayer({ id: 'cp-candidates-label', type: 'symbol', source: 'cp-candidates-src', layout: {
-    'text-field': ['get', 'number'], 'text-size': 11, 'text-offset': [0, -1.5]
-  }, paint: { 'text-color': '#444' }})
+  map.addLayer({ id: 'cp-candidates', type: 'symbol', source: 'cp-candidates-src',
+    layout: {
+      'icon-image': ['case',
+        ['==', ['get', 'usage'], 'start'], 'cpc-start-icon',
+        ['==', ['get', 'usage'], 'goal'], 'cpc-finish-icon',
+        'cpc-icon',
+      ],
+      'icon-size': 1, 'icon-allow-overlap': true,
+      'text-field': ['case', ['==', ['get', 'usage'], 'cp'], ['to-string', ['get', 'number']], ''],
+      'text-size': 10, 'text-offset': [1.3, 0], 'text-anchor': 'left',
+    },
+    paint: { 'text-color': '#777', 'text-halo-color': 'white', 'text-halo-width': 1 }
+  })
 
   // cps
   map.addSource('cps-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
-  map.addLayer({ id: 'cps', type: 'circle', source: 'cps-src', paint: {
-    'circle-radius': 12, 'circle-color': '#e74c3c', 'circle-opacity': 0.9, 'circle-stroke-width': 2, 'circle-stroke-color': 'white'
-  }})
-  map.addLayer({ id: 'cps-label', type: 'symbol', source: 'cps-src', layout: {
-    'text-field': ['get', 'number'], 'text-size': 12, 'text-offset': [0, -1.8]
-  }, paint: { 'text-color': 'white', 'text-halo-color': '#c0392b', 'text-halo-width': 1 }})
+  map.addLayer({ id: 'cps', type: 'symbol', source: 'cps-src',
+    layout: {
+      'icon-image': ['case',
+        ['==', ['get', 'usage'], 'start'], 'cp-start-icon',
+        ['==', ['get', 'usage'], 'goal'], 'cp-finish-icon',
+        'cp-icon',
+      ],
+      'icon-size': 1, 'icon-allow-overlap': true,
+      'text-field': ['case', ['==', ['get', 'usage'], 'cp'], ['to-string', ['get', 'number']], ''],
+      'text-size': 11, 'text-offset': [1.3, 0], 'text-anchor': 'left',
+    },
+    paint: { 'text-color': '#c0392b', 'text-halo-color': 'white', 'text-halo-width': 1 }
+  })
 
   // survey memos
   map.addSource('survey-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
-  map.addLayer({ id: 'survey-areas', type: 'fill', source: 'survey-src', filter: ['==', ['get', 'object_type'], 'area'],
-    paint: { 'fill-color': '#f59e0b', 'fill-opacity': 0.2 } })
-  map.addLayer({ id: 'survey-lines', type: 'line', source: 'survey-src', filter: ['==', ['get', 'object_type'], 'line'],
+  map.addLayer({ id: 'survey-areas', type: 'fill', source: 'survey-src',
+    filter: ['==', ['geometry-type'], 'Polygon'],
+    paint: { 'fill-color': ['get', 'color'], 'fill-opacity': ['get', 'opacity'] } })
+  map.addLayer({ id: 'survey-areas-selected', type: 'line', source: 'survey-src',
+    filter: ['==', ['get', 'id'], ''],
     paint: { 'line-color': '#f59e0b', 'line-width': 3 } })
-  map.addLayer({ id: 'survey-points', type: 'circle', source: 'survey-src', filter: ['==', ['get', 'object_type'], 'point'],
-    paint: { 'circle-radius': 8, 'circle-color': '#f59e0b', 'circle-stroke-width': 2, 'circle-stroke-color': 'white' } })
+  map.addLayer({ id: 'survey-lines', type: 'line', source: 'survey-src',
+    filter: ['==', ['geometry-type'], 'LineString'],
+    paint: { 'line-color': ['get', 'color'], 'line-width': ['get', 'width'], 'line-opacity': ['get', 'opacity'] } })
+  map.addLayer({ id: 'survey-lines-selected', type: 'line', source: 'survey-src',
+    filter: ['==', ['get', 'id'], ''],
+    paint: { 'line-color': '#fff', 'line-width': 5, 'line-opacity': 0.5 } })
+  map.addLayer({ id: 'survey-points', type: 'circle', source: 'survey-src',
+    filter: ['==', ['geometry-type'], 'Point'],
+    paint: {
+      'circle-radius': ['get', 'size'],
+      'circle-color': ['get', 'color'],
+      'circle-opacity': ['get', 'opacity'],
+      'circle-stroke-width': 2, 'circle-stroke-color': 'white',
+    } })
+  map.addLayer({ id: 'survey-points-selected', type: 'circle', source: 'survey-src',
+    filter: ['==', ['get', 'id'], ''],
+    paint: {
+      'circle-radius': ['+', ['get', 'size'], 4],
+      'circle-color': 'transparent',
+      'circle-stroke-width': 3, 'circle-stroke-color': '#f59e0b',
+    } })
 }
 
-function updateLayers(map: maplibregl.Map, project: ProjectData, opts: {
-  showCpCandidates: boolean; showCps: boolean; showPrintArea: boolean
-  showSurveyMemos: boolean; showCurrentLocation: boolean
-}) {
-  // print bbox
-  const [w, s, e, n] = project.metadata.print.bbox
-  ;(map.getSource('print-bbox') as maplibregl.GeoJSONSource)?.setData({
-    type: 'FeatureCollection', features: opts.showPrintArea ? [{
-      type: 'Feature', properties: {},
-      geometry: { type: 'Polygon', coordinates: [[[w,s],[e,s],[e,n],[w,n],[w,s]]] }
-    }] : []
-  })
+function updateLayers(
+  map: maplibregl.Map,
+  project: ProjectData,
+  opts: {
+    showCpCandidates: boolean; showCps: boolean; showPrintArea: boolean
+    showSurveyMemos: boolean; showCpLines: boolean
+  }
+) {
+  const bbox = project.metadata.print?.bbox
+  const bboxFeature = bbox
+    ? [{ type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[bbox[0],bbox[1]],[bbox[2],bbox[1]],[bbox[2],bbox[3]],[bbox[0],bbox[3]],[bbox[0],bbox[1]]]] } }]
+    : []
+  ;(map.getSource('print-bbox') as maplibregl.GeoJSONSource)?.setData(
+    { type: 'FeatureCollection', features: opts.showPrintArea ? bboxFeature : [] } as Parameters<maplibregl.GeoJSONSource['setData']>[0])
+
+  // CP lines / distances
+  const sortedCps = sortByOrder(project.cps)
+  const cpLineFeatures: object[] = []
+  const cpDistFeatures: object[] = []
+  if (opts.showCpLines && sortedCps.length >= 2) {
+    for (let i = 1; i < sortedCps.length; i++) {
+      const a = sortedCps[i - 1]; const b = sortedCps[i]
+      cpLineFeatures.push({
+        type: 'Feature', properties: {},
+        geometry: { type: 'LineString', coordinates: [a.coordinates, b.coordinates] }
+      })
+      const dist = haversine(a.coordinates[0], a.coordinates[1], b.coordinates[0], b.coordinates[1])
+      const mid: [number, number] = [(a.coordinates[0] + b.coordinates[0]) / 2, (a.coordinates[1] + b.coordinates[1]) / 2]
+      cpDistFeatures.push({
+        type: 'Feature', properties: { dist: formatDistance(dist) },
+        geometry: { type: 'Point', coordinates: mid }
+      })
+    }
+  }
+  ;(map.getSource('cp-lines') as maplibregl.GeoJSONSource)?.setData(
+    { type: 'FeatureCollection', features: cpLineFeatures } as Parameters<maplibregl.GeoJSONSource['setData']>[0])
+  ;(map.getSource('cp-dist') as maplibregl.GeoJSONSource)?.setData(
+    { type: 'FeatureCollection', features: cpDistFeatures } as Parameters<maplibregl.GeoJSONSource['setData']>[0])
 
   // cp candidates
   ;(map.getSource('cp-candidates-src') as maplibregl.GeoJSONSource)?.setData({
     type: 'FeatureCollection',
     features: opts.showCpCandidates ? project.cpCandidates.map(c => ({
-      type: 'Feature' as const, properties: { id: c.id, number: c.number },
+      type: 'Feature' as const,
+      properties: { id: c.id, number: c.number, usage: c.usage },
       geometry: { type: 'Point' as const, coordinates: c.coordinates }
     })) : []
   })
@@ -626,31 +697,37 @@ function updateLayers(map: maplibregl.Map, project: ProjectData, opts: {
   ;(map.getSource('cps-src') as maplibregl.GeoJSONSource)?.setData({
     type: 'FeatureCollection',
     features: opts.showCps ? project.cps.map(c => ({
-      type: 'Feature' as const, properties: { id: c.id, number: c.number },
+      type: 'Feature' as const,
+      properties: { id: c.id, number: c.number, usage: c.usage },
       geometry: { type: 'Point' as const, coordinates: c.coordinates }
     })) : []
   })
 
   // survey memos
-  const surveyFeatures: maplibregl.MapGeoJSONFeature[] = []
+  const surveyFeatures: object[] = []
   if (opts.showSurveyMemos) {
     for (const m of project.surveyMemos) {
-      let geometry: object
+      const style = m.style as Partial<PointStyle & LineStyle & AreaStyle>
+      const props = {
+        id: m.id, object_type: m.object_type, category: m.category,
+        color: style.color ?? '#f59e0b',
+        opacity: style.opacity ?? 0.9,
+        size: (style as Partial<PointStyle>).size ?? 8,
+        width: (style as Partial<LineStyle>).width ?? 3,
+      }
       if (m.object_type === 'point') {
-        geometry = { type: 'Point', coordinates: m.coordinates }
+        surveyFeatures.push({ type: 'Feature', properties: props,
+          geometry: { type: 'Point', coordinates: m.coordinates } })
       } else if (m.object_type === 'line') {
-        geometry = { type: 'LineString', coordinates: m.coordinates }
+        surveyFeatures.push({ type: 'Feature', properties: props,
+          geometry: { type: 'LineString', coordinates: m.coordinates } })
       } else {
         const coords = m.coordinates as [number, number][]
-        geometry = { type: 'Polygon', coordinates: [[...coords, coords[0]]] }
+        surveyFeatures.push({ type: 'Feature', properties: props,
+          geometry: { type: 'Polygon', coordinates: [[...coords, coords[0]]] } })
       }
-      surveyFeatures.push({
-        type: 'Feature', properties: { id: m.id, object_type: m.object_type, category: m.category },
-        geometry
-      } as unknown as maplibregl.MapGeoJSONFeature)
     }
   }
-  ;(map.getSource('survey-src') as maplibregl.GeoJSONSource)?.setData({
-    type: 'FeatureCollection', features: surveyFeatures
-  })
+  ;(map.getSource('survey-src') as maplibregl.GeoJSONSource)?.setData(
+    { type: 'FeatureCollection', features: surveyFeatures } as Parameters<maplibregl.GeoJSONSource['setData']>[0])
 }

@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect, useCallback } from 'react'
 import maplibregl from 'maplibre-gl'
-import { parseS1GeoJSON } from '../../lib/geojson'
+import { parseS1GeoJSON, parseS2Zip, haversine, formatDistance, sortByOrder } from '../../lib/geojson'
 import type { ProjectData, PrintInfo } from '../../types'
 
 interface Props {
@@ -9,6 +9,38 @@ interface Props {
 }
 
 const GSI_TILE_URL = 'https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png'
+
+function drawOrienteeringImages(map: maplibregl.Map) {
+  const size = 32
+
+  // CP: circle + center dot
+  const cpCanvas = document.createElement('canvas')
+  cpCanvas.width = size; cpCanvas.height = size
+  const cpCtx = cpCanvas.getContext('2d')!
+  cpCtx.strokeStyle = '#555'; cpCtx.lineWidth = 2.5
+  cpCtx.beginPath(); cpCtx.arc(size / 2, size / 2, 12, 0, Math.PI * 2); cpCtx.stroke()
+  cpCtx.fillStyle = '#555'
+  cpCtx.beginPath(); cpCtx.arc(size / 2, size / 2, 2.5, 0, Math.PI * 2); cpCtx.fill()
+  if (!map.hasImage('cpc-icon')) map.addImage('cpc-icon', cpCtx.getImageData(0, 0, size, size))
+
+  // Start: triangle
+  const stCanvas = document.createElement('canvas')
+  stCanvas.width = size; stCanvas.height = size
+  const stCtx = stCanvas.getContext('2d')!
+  stCtx.strokeStyle = '#555'; stCtx.lineWidth = 2.5
+  stCtx.beginPath(); stCtx.moveTo(size / 2, 4); stCtx.lineTo(size - 4, size - 4); stCtx.lineTo(4, size - 4); stCtx.closePath(); stCtx.stroke()
+  if (!map.hasImage('cpc-start-icon')) map.addImage('cpc-start-icon', stCtx.getImageData(0, 0, size, size))
+
+  // Finish: double circle
+  const fnCanvas = document.createElement('canvas')
+  fnCanvas.width = size; fnCanvas.height = size
+  const fnCtx = fnCanvas.getContext('2d')!
+  fnCtx.strokeStyle = '#555'; fnCtx.lineWidth = 2.5
+  fnCtx.beginPath(); fnCtx.arc(size / 2, size / 2, 13, 0, Math.PI * 2); fnCtx.stroke()
+  fnCtx.lineWidth = 1.8
+  fnCtx.beginPath(); fnCtx.arc(size / 2, size / 2, 8, 0, Math.PI * 2); fnCtx.stroke()
+  if (!map.hasImage('cpc-finish-icon')) map.addImage('cpc-finish-icon', fnCtx.getImageData(0, 0, size, size))
+}
 
 export function PrepareScreen({ onReady, existingProject }: Props) {
   const mapContainer = useRef<HTMLDivElement>(null)
@@ -43,20 +75,33 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
     map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left')
     mapRef.current = map
 
+    map.on('load', () => {
+      drawOrienteeringImages(map)
+      initPrepareLayerSources(map)
+    })
+
     return () => {
       map.remove()
       mapRef.current = null
     }
   }, [])
 
-  // ---- map resize when layout changes (footer button appears) ----
+  // ---- resize when footer appears ----
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
-    // Defer to next frame so DOM has settled
     const id = requestAnimationFrame(() => map.resize())
     return () => cancelAnimationFrame(id)
-  }, [project]) // re-run when project is set (footer appears / disappears)
+  }, [project])
+
+  // ---- update layers when project changes ----
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const update = () => updatePrepareLayerSources(map, project)
+    if (map.isStyleLoaded()) update()
+    else map.once('load', update)
+  }, [project])
 
   const showPrintArea = useCallback((print: PrintInfo) => {
     const map = mapRef.current
@@ -67,8 +112,7 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
       const geojsonData = {
         type: 'FeatureCollection' as const,
         features: [{
-          type: 'Feature' as const,
-          properties: {},
+          type: 'Feature' as const, properties: {},
           geometry: {
             type: 'Polygon' as const,
             coordinates: [[[west, south], [east, south], [east, north], [west, north], [west, south]]]
@@ -77,20 +121,17 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
       }
       if (map.getSource('print-bbox')) {
         (map.getSource('print-bbox') as maplibregl.GeoJSONSource).setData(geojsonData)
-        return
+      } else {
+        map.addSource('print-bbox', { type: 'geojson', data: geojsonData })
+        map.addLayer({ id: 'print-bbox-fill', type: 'fill', source: 'print-bbox',
+          paint: { 'fill-color': '#2d6a4f', 'fill-opacity': 0.1 } })
+        map.addLayer({ id: 'print-bbox-line', type: 'line', source: 'print-bbox',
+          paint: { 'line-color': '#2d6a4f', 'line-width': 2, 'line-dasharray': [4, 2] } })
       }
-      map.addSource('print-bbox', { type: 'geojson', data: geojsonData })
-      map.addLayer({ id: 'print-bbox-fill', type: 'fill', source: 'print-bbox',
-        paint: { 'fill-color': '#2d6a4f', 'fill-opacity': 0.1 } })
-      map.addLayer({ id: 'print-bbox-line', type: 'line', source: 'print-bbox',
-        paint: { 'line-color': '#2d6a4f', 'line-width': 2, 'line-dasharray': [4, 2] } })
     }
 
-    if (map.isStyleLoaded()) {
-      addBboxLayer()
-    } else {
-      map.once('load', addBboxLayer)
-    }
+    if (map.isStyleLoaded()) addBboxLayer()
+    else map.once('load', addBboxLayer)
 
     map.fitBounds([[west, south], [east, north]], { padding: 40 })
     setCacheBbox([west, south, east, north])
@@ -102,16 +143,25 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
     }
   }, [existingProject, showPrintArea])
 
+  const applyProject = (parsed: ProjectData) => {
+    setProject(parsed)
+    showPrintArea(parsed.metadata.print)
+  }
+
   const handleFileImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
     setError(null)
     try {
-      const text = await file.text()
-      const json = JSON.parse(text) as unknown
-      const parsed = parseS1GeoJSON(json)
-      setProject(parsed)
-      showPrintArea(parsed.metadata.print)
+      if (file.name.endsWith('.zip')) {
+        const parsed = await parseS2Zip(file)
+        applyProject(parsed)
+      } else {
+        const text = await file.text()
+        const json = JSON.parse(text) as unknown
+        const parsed = parseS1GeoJSON(json)
+        applyProject(parsed)
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       setError(`読み込みエラー: ${msg}`)
@@ -169,7 +219,7 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Header */}
       <div style={{ padding: '12px 16px', background: '#2d6a4f', color: 'white', flexShrink: 0 }}>
-        <h1 style={{ margin: 0, fontSize: 18, fontWeight: 'bold' }}>下見支援アプリ — 事前準備</h1>
+        <h1 style={{ margin: 0, fontSize: 18, fontWeight: 'bold' }}>オリエン調査アプリ — 事前準備</h1>
       </div>
 
       {/* Controls */}
@@ -180,8 +230,8 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
             padding: '8px 14px', background: '#2d6a4f', color: 'white',
             borderRadius: 6, cursor: 'pointer', fontSize: 14, fontWeight: 600
           }}>
-            📂 GeoJSONを読み込む
-            <input type="file" accept=".geojson,.json" onChange={handleFileImport}
+            📂 ファイルを読み込む
+            <input type="file" accept=".geojson,.json,.zip" onChange={handleFileImport}
               style={{ display: 'none' }} />
           </label>
 
@@ -241,10 +291,84 @@ export function PrepareScreen({ onReady, existingProject }: Props) {
               border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 16, fontWeight: 700
             }}
           >
-            現地作業を開始 →
+            調査開始 →
           </button>
         </div>
       )}
     </div>
   )
+}
+
+function initPrepareLayerSources(map: maplibregl.Map) {
+  map.addSource('prep-cp-lines', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+  map.addLayer({ id: 'prep-cp-lines', type: 'line', source: 'prep-cp-lines',
+    paint: { 'line-color': '#888', 'line-width': 1.5, 'line-dasharray': [4, 3], 'line-opacity': 0.7 } })
+
+  map.addSource('prep-cp-dist', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+  map.addLayer({ id: 'prep-cp-dist', type: 'symbol', source: 'prep-cp-dist',
+    layout: { 'text-field': ['get', 'dist'], 'text-size': 11, 'text-offset': [0, -0.6] },
+    paint: { 'text-color': '#555', 'text-halo-color': 'white', 'text-halo-width': 1.5 } })
+
+  map.addSource('prep-candidates', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
+  map.addLayer({ id: 'prep-candidates', type: 'symbol', source: 'prep-candidates',
+    layout: {
+      'icon-image': ['case',
+        ['==', ['get', 'usage'], 'start'], 'cpc-start-icon',
+        ['==', ['get', 'usage'], 'goal'], 'cpc-finish-icon',
+        'cpc-icon'
+      ],
+      'icon-size': 1,
+      'icon-allow-overlap': true,
+      'text-field': ['case', ['==', ['get', 'usage'], 'cp'], ['to-string', ['get', 'number']], ''],
+      'text-size': 10,
+      'text-offset': [1.2, 0],
+      'text-anchor': 'left',
+    },
+    paint: { 'text-color': '#555', 'text-halo-color': 'white', 'text-halo-width': 1 }
+  })
+}
+
+function updatePrepareLayerSources(map: maplibregl.Map, project: ProjectData | null) {
+  const cpLinesSrc = map.getSource('prep-cp-lines') as maplibregl.GeoJSONSource | undefined
+  const cpDistSrc = map.getSource('prep-cp-dist') as maplibregl.GeoJSONSource | undefined
+  const candidatesSrc = map.getSource('prep-candidates') as maplibregl.GeoJSONSource | undefined
+  if (!cpLinesSrc || !cpDistSrc || !candidatesSrc) return
+
+  if (!project) {
+    const empty = { type: 'FeatureCollection' as const, features: [] }
+    cpLinesSrc.setData(empty); cpDistSrc.setData(empty); candidatesSrc.setData(empty)
+    return
+  }
+
+  const sorted = sortByOrder(project.cpCandidates)
+
+  const lineFeatures: object[] = []
+  const distFeatures: object[] = []
+  for (let i = 1; i < sorted.length; i++) {
+    const a = sorted[i - 1]; const b = sorted[i]
+    lineFeatures.push({
+      type: 'Feature', properties: {},
+      geometry: { type: 'LineString', coordinates: [a.coordinates, b.coordinates] }
+    })
+    const dist = haversine(a.coordinates[0], a.coordinates[1], b.coordinates[0], b.coordinates[1])
+    const mid: [number, number] = [
+      (a.coordinates[0] + b.coordinates[0]) / 2,
+      (a.coordinates[1] + b.coordinates[1]) / 2,
+    ]
+    distFeatures.push({
+      type: 'Feature', properties: { dist: formatDistance(dist) },
+      geometry: { type: 'Point', coordinates: mid }
+    })
+  }
+
+  cpLinesSrc.setData({ type: 'FeatureCollection', features: lineFeatures } as Parameters<typeof cpLinesSrc.setData>[0])
+  cpDistSrc.setData({ type: 'FeatureCollection', features: distFeatures } as Parameters<typeof cpDistSrc.setData>[0])
+
+  candidatesSrc.setData({
+    type: 'FeatureCollection',
+    features: project.cpCandidates.map(c => ({
+      type: 'Feature', properties: { id: c.id, number: c.number, usage: c.usage },
+      geometry: { type: 'Point', coordinates: c.coordinates }
+    }))
+  })
 }
