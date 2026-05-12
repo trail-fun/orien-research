@@ -65,12 +65,10 @@ export function CPListModal({ cps, onSave, onEdit, onClose }: Props) {
           padding: '14px 16px', borderBottom: '1px solid #eee', flexShrink: 0,
         }}>
           <div>
-            <h2 style={{ margin: 0, fontSize: 16 }}>CP一覧</h2>
-            {list.length >= 2 && (
-              <div style={{ fontSize: 12, color: '#2d6a4f', marginTop: 2 }}>
-                合計距離: {formatDistance(totalDist)}
-              </div>
-            )}
+            <h2 style={{ margin: 0, fontSize: 16 }}>CP一覧 <span style={{ fontSize: 13, fontWeight: 400, color: '#888' }}>{list.length}件</span></h2>
+            <div style={{ fontSize: 12, color: '#2d6a4f', marginTop: 2 }}>
+              合計距離: {list.length >= 2 ? formatDistance(totalDist) : '---'}
+            </div>
           </div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#888' }}>✕</button>
         </div>
