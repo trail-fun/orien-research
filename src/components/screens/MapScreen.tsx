@@ -669,9 +669,8 @@ function initLayers(map: maplibregl.Map) {
     filter: ['==', ['geometry-type'], 'Point'],
     paint: {
       'circle-radius': ['get', 'size'],
-      'circle-color': ['get', 'color'],
-      'circle-opacity': ['get', 'opacity'],
-      'circle-stroke-width': 2, 'circle-stroke-color': 'white',
+      'circle-color': 'white',
+      'circle-stroke-width': 1.5, 'circle-stroke-color': 'black',
     } })
   map.addLayer({ id: 'survey-points-selected', type: 'circle', source: 'survey-src',
     filter: ['==', ['get', 'id'], ''],
