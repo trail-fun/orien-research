@@ -5,10 +5,11 @@ import { sortByOrder } from '../lib/geojson'
 interface Props {
   cps: Cp[]
   onSave: (cps: Cp[]) => void
+  onEdit: (cp: Cp) => void
   onClose: () => void
 }
 
-export function CPListModal({ cps, onSave, onClose }: Props) {
+export function CPListModal({ cps, onSave, onEdit, onClose }: Props) {
   const [list, setList] = useState<Cp[]>(() => sortByOrder(cps))
 
   const moveUp = (i: number) => {
@@ -92,9 +93,15 @@ export function CPListModal({ cps, onSave, onClose }: Props) {
                       {cp.score}点
                     </span>
                   </div>
-                  <div style={{ fontSize: 11, color: '#aaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {cp.coordinates[1].toFixed(5)}, {cp.coordinates[0].toFixed(5)}
-                  </div>
+                  {cp.description ? (
+                    <div style={{ fontSize: 12, color: '#555', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {cp.description}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 11, color: '#aaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {cp.coordinates[1].toFixed(5)}, {cp.coordinates[0].toFixed(5)}
+                    </div>
+                  )}
                 </div>
 
                 {/* Reorder buttons */}
@@ -104,6 +111,13 @@ export function CPListModal({ cps, onSave, onClose }: Props) {
                   <button onClick={() => moveDown(i)} disabled={i === list.length - 1}
                     style={arrowBtn(i === list.length - 1)}>▼</button>
                 </div>
+
+                {/* Edit */}
+                <button onClick={() => onEdit(cp)} style={{
+                  padding: '6px 10px', background: '#f0faf4', color: '#2d6a4f',
+                  border: '1px solid #c3e8d0', borderRadius: 6, cursor: 'pointer',
+                  fontSize: 13, flexShrink: 0,
+                }}>編集</button>
 
                 {/* Delete */}
                 <button onClick={() => remove(i)} style={{

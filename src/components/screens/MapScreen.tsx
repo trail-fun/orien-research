@@ -19,7 +19,7 @@ interface Props {
 
 type ModalState =
   | { type: 'none' }
-  | { type: 'cp-edit'; cp: Cp; candidate?: CpCandidate }
+  | { type: 'cp-edit'; cp: Cp; candidate?: CpCandidate; returnToList?: boolean }
   | { type: 'cp-candidate-info'; candidate: CpCandidate }
   | { type: 'survey-memo'; objectType: SurveyMemoObjectType; memo: SurveyMemo | null }
   | { type: 'cp-list' }
@@ -312,7 +312,8 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
       pushHistory({ type: 'ADD_CP', cp })
       onProjectChange({ ...p, cps: [...p.cps, cp] })
     }
-    setModal({ type: 'none' })
+    const returnToList = modal.type === 'cp-edit' && modal.returnToList
+    setModal(returnToList ? { type: 'cp-list' } : { type: 'none' })
   }
 
   const handleCpDelete = (id: string) => {
@@ -322,7 +323,8 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
       pushHistory({ type: 'DELETE_CP', cp })
       onProjectChange({ ...p, cps: p.cps.filter(c => c.id !== id) })
     }
-    setModal({ type: 'none' })
+    const returnToList = modal.type === 'cp-edit' && modal.returnToList
+    setModal(returnToList ? { type: 'cp-list' } : { type: 'none' })
   }
 
   // ---- survey memo save ----
@@ -498,6 +500,7 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
         <CPListModal
           cps={project.cps}
           onSave={handleCpListSave}
+          onEdit={cp => setModal({ type: 'cp-edit', cp, returnToList: true })}
           onClose={() => setModal({ type: 'none' })}
         />
       )}
