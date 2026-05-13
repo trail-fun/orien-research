@@ -37,6 +37,12 @@ export function SurveyMemoModal({
 
   // ---- form state ----
   const [category, setCategory] = useState<MemoCategory>(memo?.category ?? catsFor(objType)[0])
+
+  // When category changes on a new memo, auto-update color
+  const handleCategoryChange = (c: MemoCategory) => {
+    setCategory(c)
+    if (isNew) setColor(defaultStyle(objType, c).color as string)
+  }
   const [text, setText] = useState(memo?.memo ?? '')
   const [photos, setPhotos] = useState<string[]>(memo?.photos ?? [])
 
@@ -157,7 +163,7 @@ export function SurveyMemoModal({
             <div style={label}>カテゴリ</div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               {catsFor(objType).map(c => (
-                <button key={c} onClick={() => setCategory(c)} style={{
+                <button key={c} onClick={() => handleCategoryChange(c)} style={{
                   padding: '5px 12px', borderRadius: 16, fontSize: 13, cursor: 'pointer',
                   background: category === c ? '#2d6a4f' : '#f0faf4',
                   color: category === c ? 'white' : '#2d6a4f',
