@@ -57,6 +57,7 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
   projectRef.current = project
   const selectedMemoIdRef = useRef(selectedMemoId)
   selectedMemoIdRef.current = selectedMemoId
+  const dragMarkersRef = useRef<maplibregl.Marker[]>([])
 
   // single-click timer for survey memo double-click detection
   const memoClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -121,6 +122,68 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
       ? ['==', ['get', 'id'], selectedMemoId]
       : ['==', ['get', 'id'], ''])
   }, [selectedMemoId])
+
+  // ---- draggable vertex markers for selected memo ----
+  useEffect(() => {
+    dragMarkersRef.current.forEach(m => m.remove())
+    dragMarkersRef.current = []
+
+    const map = mapRef.current
+    if (!map || !selectedMemoId) return
+
+    const memo = projectRef.current.surveyMemos.find(m => m.id === selectedMemoId)
+    if (!memo) return
+
+    const coords: [number, number][] = memo.object_type === 'point'
+      ? [memo.coordinates as [number, number]]
+      : memo.coordinates as [number, number][]
+
+    const markers = coords.map((coord, i) => {
+      const el = document.createElement('div')
+      el.style.cssText = 'width:12px;height:12px;background:white;border:1.5px solid black;border-radius:50%;cursor:grab;box-shadow:0 1px 3px rgba(0,0,0,0.4);'
+
+      const marker = new maplibregl.Marker({ element: el, draggable: true, anchor: 'center' })
+        .setLngLat(coord)
+        .addTo(map)
+
+      marker.on('drag', () => {
+        const { lng, lat } = marker.getLngLat()
+        const newCoord: [number, number] = [lng, lat]
+        const p = projectRef.current
+        const cur = p.surveyMemos.find(m => m.id === selectedMemoId)
+        if (!cur) return
+        const updatedCoords = cur.object_type === 'point'
+          ? newCoord
+          : (() => { const a = [...(cur.coordinates as [number, number][])] ; a[i] = newCoord ; return a })()
+        const src = map.getSource('survey-src') as maplibregl.GeoJSONSource | undefined
+        if (src) {
+          const updated = { ...cur, coordinates: updatedCoords }
+          src.setData({ type: 'FeatureCollection',
+            features: buildSurveyFeatures(p.surveyMemos.map(m => m.id === selectedMemoId ? updated : m))
+          } as Parameters<maplibregl.GeoJSONSource['setData']>[0])
+        }
+      })
+
+      marker.on('dragend', () => {
+        const { lng, lat } = marker.getLngLat()
+        const newCoord: [number, number] = [lng, lat]
+        const p = projectRef.current
+        const cur = p.surveyMemos.find(m => m.id === selectedMemoId)
+        if (!cur) return
+        const updatedCoords: [number, number] | [number, number][] = cur.object_type === 'point'
+          ? newCoord
+          : (() => { const a = [...(cur.coordinates as [number, number][])] ; a[i] = newCoord ; return a })()
+        const updated: SurveyMemo = { ...cur, coordinates: updatedCoords }
+        pushHistory({ type: 'UPDATE_MEMO', prev: cur, next: updated })
+        onProjectChange({ ...p, surveyMemos: p.surveyMemos.map(m => m.id === selectedMemoId ? updated : m) })
+      })
+
+      return marker
+    })
+
+    dragMarkersRef.current = markers
+    return () => { dragMarkersRef.current.forEach(m => m.remove()); dragMarkersRef.current = [] }
+  }, [selectedMemoId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- layer click handlers ----
   useEffect(() => {
@@ -741,30 +804,34 @@ function updateLayers(
   })
 
   // survey memos
-  const surveyFeatures: object[] = []
-  if (opts.showSurveyMemos) {
-    for (const m of project.surveyMemos) {
-      const style = m.style as Partial<PointStyle & LineStyle & AreaStyle>
-      const props = {
-        id: m.id, object_type: m.object_type, category: m.category,
-        color: style.color ?? '#f59e0b',
-        opacity: style.opacity ?? 0.9,
-        size: (style as Partial<PointStyle>).size ?? 8,
-        width: (style as Partial<LineStyle>).width ?? 3,
-      }
-      if (m.object_type === 'point') {
-        surveyFeatures.push({ type: 'Feature', properties: props,
-          geometry: { type: 'Point', coordinates: m.coordinates } })
-      } else if (m.object_type === 'line') {
-        surveyFeatures.push({ type: 'Feature', properties: props,
-          geometry: { type: 'LineString', coordinates: m.coordinates } })
-      } else {
-        const coords = m.coordinates as [number, number][]
-        surveyFeatures.push({ type: 'Feature', properties: props,
-          geometry: { type: 'Polygon', coordinates: [[...coords, coords[0]]] } })
-      }
+  ;(map.getSource('survey-src') as maplibregl.GeoJSONSource)?.setData(
+    { type: 'FeatureCollection',
+      features: opts.showSurveyMemos ? buildSurveyFeatures(project.surveyMemos) : [],
+    } as Parameters<maplibregl.GeoJSONSource['setData']>[0])
+}
+
+function buildSurveyFeatures(memos: SurveyMemo[]): object[] {
+  const features: object[] = []
+  for (const m of memos) {
+    const style = m.style as Partial<PointStyle & LineStyle & AreaStyle>
+    const props = {
+      id: m.id, object_type: m.object_type, category: m.category,
+      color: style.color ?? '#f59e0b',
+      opacity: style.opacity ?? 0.9,
+      size: (style as Partial<PointStyle>).size ?? 8,
+      width: (style as Partial<LineStyle>).width ?? 3,
+    }
+    if (m.object_type === 'point') {
+      features.push({ type: 'Feature', properties: props,
+        geometry: { type: 'Point', coordinates: m.coordinates } })
+    } else if (m.object_type === 'line') {
+      features.push({ type: 'Feature', properties: props,
+        geometry: { type: 'LineString', coordinates: m.coordinates } })
+    } else {
+      const coords = m.coordinates as [number, number][]
+      features.push({ type: 'Feature', properties: props,
+        geometry: { type: 'Polygon', coordinates: [[...coords, coords[0]]] } })
     }
   }
-  ;(map.getSource('survey-src') as maplibregl.GeoJSONSource)?.setData(
-    { type: 'FeatureCollection', features: surveyFeatures } as Parameters<maplibregl.GeoJSONSource['setData']>[0])
+  return features
 }
