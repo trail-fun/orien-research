@@ -39,6 +39,7 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
   const [history, setHistory] = useState<HistoryAction[]>([])
   const [, setRedoStack] = useState<HistoryAction[]>([])
   const [selectedMemoId, setSelectedMemoId] = useState<string | null>(null)
+  const [selectedCpId, setSelectedCpId] = useState<string | null>(null)
   const [mapCenter, setMapCenter] = useState<[number, number]>(() => {
     const bb = project.metadata.print?.bbox
     return bb ? [(bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2] : [136.0, 36.0]
@@ -57,11 +58,17 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
   projectRef.current = project
   const selectedMemoIdRef = useRef(selectedMemoId)
   selectedMemoIdRef.current = selectedMemoId
+  const selectedCpIdRef = useRef(selectedCpId)
+  selectedCpIdRef.current = selectedCpId
   const dragMarkersRef = useRef<maplibregl.Marker[]>([])
+  const cpDragMarkerRef = useRef<maplibregl.Marker | null>(null)
 
   // single-click timer for survey memo double-click detection
   const memoClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const memoLastClickId = useRef<string | null>(null)
+  // single-click timer for CP double-click detection
+  const cpClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cpLastClickId = useRef<string | null>(null)
 
   // ---- map init ----
   useEffect(() => {
@@ -108,10 +115,13 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
     updateLayers(map, project, displayOptions)
   }, [project, displayOptions])
 
-  // ---- survey memo selection highlight ----
+  // ---- selection highlights ----
   useEffect(() => {
     const map = mapRef.current
     if (!map || !map.isStyleLoaded()) return
+    map.setFilter('cps-selected', selectedCpId
+      ? ['==', ['get', 'id'], selectedCpId]
+      : ['==', ['get', 'id'], ''])
     map.setFilter('survey-points-selected', selectedMemoId
       ? ['==', ['get', 'id'], selectedMemoId]
       : ['==', ['get', 'id'], ''])
@@ -121,7 +131,31 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
     map.setFilter('survey-areas-selected', selectedMemoId
       ? ['==', ['get', 'id'], selectedMemoId]
       : ['==', ['get', 'id'], ''])
-  }, [selectedMemoId])
+  }, [selectedMemoId, selectedCpId])
+
+  // ---- draggable marker for selected CP ----
+  useEffect(() => {
+    if (cpDragMarkerRef.current) { cpDragMarkerRef.current.remove(); cpDragMarkerRef.current = null }
+    const map = mapRef.current
+    if (!map || !selectedCpId) return
+    const cp = projectRef.current.cps.find(c => c.id === selectedCpId)
+    if (!cp) return
+    const el = document.createElement('div')
+    el.style.cssText = 'width:12px;height:12px;background:white;border:1.5px solid black;border-radius:50%;cursor:grab;box-shadow:0 1px 3px rgba(0,0,0,0.4);'
+    const marker = new maplibregl.Marker({ element: el, draggable: true, anchor: 'center' })
+      .setLngLat(cp.coordinates).addTo(map)
+    marker.on('dragend', () => {
+      const { lng, lat } = marker.getLngLat()
+      const p = projectRef.current
+      const cur = p.cps.find(c => c.id === selectedCpId)
+      if (!cur) return
+      const updated: Cp = { ...cur, coordinates: [lng, lat] }
+      pushHistory({ type: 'UPDATE_CP', prev: cur, next: updated })
+      onProjectChange({ ...p, cps: p.cps.map(c => c.id === selectedCpId ? updated : c) })
+    })
+    cpDragMarkerRef.current = marker
+    return () => { if (cpDragMarkerRef.current) { cpDragMarkerRef.current.remove(); cpDragMarkerRef.current = null } }
+  }, [selectedCpId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- draggable vertex markers for selected memo ----
   useEffect(() => {
@@ -205,8 +239,25 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
       const f = e.features?.[0]
       if (!f) return
       const cpId = f.properties?.id as string
-      const cp = projectRef.current.cps.find(c => c.id === cpId)
-      if (cp) setModal({ type: 'cp-edit', cp })
+
+      if (cpLastClickId.current === cpId && cpClickTimer.current !== null) {
+        // double-click: open edit modal
+        clearTimeout(cpClickTimer.current)
+        cpClickTimer.current = null
+        cpLastClickId.current = null
+        const cp = projectRef.current.cps.find(c => c.id === cpId)
+        if (cp) setModal({ type: 'cp-edit', cp })
+      } else {
+        // first click: select
+        cpLastClickId.current = cpId
+        setSelectedCpId(cpId)
+        setSelectedMemoId(null)
+        if (cpClickTimer.current) clearTimeout(cpClickTimer.current)
+        cpClickTimer.current = setTimeout(() => {
+          cpClickTimer.current = null
+          cpLastClickId.current = null
+        }, 400)
+      }
     }
 
     const onMemoClick = (e: maplibregl.MapMouseEvent & { features?: maplibregl.MapGeoJSONFeature[] }) => {
@@ -226,6 +277,7 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
         // first click: select
         memoLastClickId.current = memoId
         setSelectedMemoId(memoId)
+        setSelectedCpId(null)
         if (memoClickTimer.current) clearTimeout(memoClickTimer.current)
         memoClickTimer.current = setTimeout(() => {
           memoClickTimer.current = null
@@ -259,6 +311,7 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
         } else {
           memoLastClickId.current = memoId
           setSelectedMemoId(memoId)
+          setSelectedCpId(null)
           if (memoClickTimer.current) clearTimeout(memoClickTimer.current)
           memoClickTimer.current = setTimeout(() => {
             memoClickTimer.current = null
@@ -269,6 +322,7 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
       }
 
       setSelectedMemoId(null)
+      setSelectedCpId(null)
     }
 
     map.on('click', onEmptyClick)
@@ -814,6 +868,16 @@ function initLayers(map: maplibregl.Map) {
   map.addLayer({ id: 'cps-dot', type: 'circle', source: 'cps-src',
     filter: ['!', ['any', ['==', ['get', 'usage'], 'goal'], ['==', ['get', 'usage'], 'both']]],
     paint: { 'circle-radius': 3, 'circle-color': '#c0392b' }
+  })
+  // selection ring for selected CP
+  map.addLayer({ id: 'cps-selected', type: 'circle', source: 'cps-src',
+    filter: ['==', ['get', 'id'], ''],
+    paint: {
+      'circle-radius': 17,
+      'circle-color': 'rgba(0,0,0,0)',
+      'circle-stroke-width': 2.5,
+      'circle-stroke-color': '#f59e0b',
+    }
   })
 
   // X mark image for 通行止め
