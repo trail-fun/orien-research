@@ -237,7 +237,7 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
     const onEmptyClick = (e: maplibregl.MapMouseEvent) => {
       // Exact hit: CP and point/area memo layers
       const exactHit = map.queryRenderedFeatures(e.point, {
-        layers: ['cp-candidates', 'cps', 'survey-points', 'survey-areas'],
+        layers: ['cp-candidates', 'cps', 'survey-points', 'survey-points-x', 'survey-areas'],
       })
       if (exactHit.length > 0) return  // handled by layer-specific handlers
 
@@ -275,6 +275,7 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
     map.on('click', 'cp-candidates', onCpcClick)
     map.on('click', 'cps', onCpClick)
     map.on('click', 'survey-points', onMemoClick)
+    map.on('click', 'survey-points-x', onMemoClick)
     map.on('click', 'survey-areas', onMemoClick)
     map.on('mouseenter', 'cp-candidates', () => { map.getCanvas().style.cursor = 'pointer' })
     map.on('mouseleave', 'cp-candidates', () => { map.getCanvas().style.cursor = '' })
@@ -282,6 +283,8 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
     map.on('mouseleave', 'cps', () => { map.getCanvas().style.cursor = '' })
     map.on('mouseenter', 'survey-points', () => { map.getCanvas().style.cursor = 'pointer' })
     map.on('mouseleave', 'survey-points', () => { map.getCanvas().style.cursor = '' })
+    map.on('mouseenter', 'survey-points-x', () => { map.getCanvas().style.cursor = 'pointer' })
+    map.on('mouseleave', 'survey-points-x', () => { map.getCanvas().style.cursor = '' })
     map.on('mouseenter', 'survey-lines', () => { map.getCanvas().style.cursor = 'pointer' })
     map.on('mouseleave', 'survey-lines', () => { map.getCanvas().style.cursor = '' })
     map.on('mouseenter', 'survey-areas', () => { map.getCanvas().style.cursor = 'pointer' })
@@ -292,9 +295,108 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
       map.off('click', 'cp-candidates', onCpcClick)
       map.off('click', 'cps', onCpClick)
       map.off('click', 'survey-points', onMemoClick)
+      map.off('click', 'survey-points-x', onMemoClick)
       map.off('click', 'survey-areas', onMemoClick)
     }
   }, [])
+
+  // ---- whole-memo body drag (line segment / area fill → translate all coords) ----
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    const state = {
+      dragging: false,
+      startLng: 0, startLat: 0,
+      origCoords: [] as [number, number][],
+    }
+
+    const onDown = (e: maplibregl.MapMouseEvent) => {
+      const memoId = selectedMemoIdRef.current
+      if (!memoId) return
+      const memo = projectRef.current.surveyMemos.find(m => m.id === memoId)
+      if (!memo || memo.object_type === 'point') return
+
+      const PAD = 15
+      const bbox: [maplibregl.PointLike, maplibregl.PointLike] = [
+        [e.point.x - PAD, e.point.y - PAD],
+        [e.point.x + PAD, e.point.y + PAD],
+      ]
+      let hit = false
+      if (memo.object_type === 'line') {
+        hit = map.queryRenderedFeatures(bbox, { layers: ['survey-lines'] })
+          .some(f => f.properties?.id === memoId)
+      } else {
+        hit = map.queryRenderedFeatures(e.point, { layers: ['survey-areas'] })
+          .some(f => f.properties?.id === memoId)
+      }
+      if (!hit) return
+
+      // Skip if clicking near a vertex marker
+      const coords = memo.coordinates as [number, number][]
+      const nearVertex = coords.some(c => {
+        const p = map.project(c as maplibregl.LngLatLike)
+        return Math.hypot(e.point.x - p.x, e.point.y - p.y) < 20
+      })
+      if (nearVertex) return
+
+      state.dragging = true
+      state.startLng = e.lngLat.lng
+      state.startLat = e.lngLat.lat
+      state.origCoords = [...coords]
+      map.dragPan.disable()
+    }
+
+    const onMove = (e: maplibregl.MapMouseEvent) => {
+      if (!state.dragging) return
+      const memoId = selectedMemoIdRef.current
+      if (!memoId) return
+      const dLng = e.lngLat.lng - state.startLng
+      const dLat = e.lngLat.lat - state.startLat
+      const newCoords = state.origCoords.map(([lng, lat]) => [lng + dLng, lat + dLat] as [number, number])
+      const p = projectRef.current
+      const cur = p.surveyMemos.find(m => m.id === memoId)
+      if (!cur) return
+      const src = map.getSource('survey-src') as maplibregl.GeoJSONSource | undefined
+      src?.setData({ type: 'FeatureCollection',
+        features: buildSurveyFeatures(p.surveyMemos.map(m => m.id === memoId
+          ? { ...cur, coordinates: newCoords } : m))
+      } as Parameters<maplibregl.GeoJSONSource['setData']>[0])
+      dragMarkersRef.current.forEach((mk, i) => { if (newCoords[i]) mk.setLngLat(newCoords[i]) })
+    }
+
+    const onUp = (e: maplibregl.MapMouseEvent) => {
+      if (!state.dragging) return
+      state.dragging = false
+      map.dragPan.enable()
+      const memoId = selectedMemoIdRef.current
+      if (!memoId) return
+      const dLng = e.lngLat.lng - state.startLng
+      const dLat = e.lngLat.lat - state.startLat
+      const newCoords = state.origCoords.map(([lng, lat]) => [lng + dLng, lat + dLat] as [number, number])
+      const p = projectRef.current
+      const cur = p.surveyMemos.find(m => m.id === memoId)
+      if (!cur) return
+      const updated: SurveyMemo = { ...cur, coordinates: newCoords }
+      pushHistory({ type: 'UPDATE_MEMO', prev: cur, next: updated })
+      onProjectChange({ ...p, surveyMemos: p.surveyMemos.map(m => m.id === memoId ? updated : m) })
+    }
+
+    const onCancel = () => { if (state.dragging) { state.dragging = false; map.dragPan.enable() } }
+
+    map.on('mousedown', onDown)
+    map.on('mousemove', onMove)
+    map.on('mouseup', onUp)
+    map.on('mouseout', onCancel)
+
+    return () => {
+      map.off('mousedown', onDown)
+      map.off('mousemove', onMove)
+      map.off('mouseup', onUp)
+      map.off('mouseout', onCancel)
+      if (state.dragging) map.dragPan.enable()
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- GPS ----
   const handleCurrentLocation = useCallback(() => {
@@ -714,6 +816,16 @@ function initLayers(map: maplibregl.Map) {
     paint: { 'circle-radius': 3, 'circle-color': '#c0392b' }
   })
 
+  // X mark image for 通行止め
+  const xSize = 32
+  const xCanvas = document.createElement('canvas')
+  xCanvas.width = xSize; xCanvas.height = xSize
+  const xCtx = xCanvas.getContext('2d')!
+  xCtx.strokeStyle = '#e74c3c'; xCtx.lineWidth = 5; xCtx.lineCap = 'round'
+  xCtx.beginPath(); xCtx.moveTo(6, 6); xCtx.lineTo(26, 26); xCtx.stroke()
+  xCtx.beginPath(); xCtx.moveTo(26, 6); xCtx.lineTo(6, 26); xCtx.stroke()
+  map.addImage('x-mark', xCtx.getImageData(0, 0, xSize, xSize))
+
   // survey memos
   map.addSource('survey-src', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } })
   map.addLayer({ id: 'survey-areas', type: 'fill', source: 'survey-src',
@@ -728,19 +840,25 @@ function initLayers(map: maplibregl.Map) {
   map.addLayer({ id: 'survey-lines-selected', type: 'line', source: 'survey-src',
     filter: ['==', ['get', 'id'], ''],
     paint: { 'line-color': '#fff', 'line-width': 5, 'line-opacity': 0.5 } })
+  // circle points (excluding 通行止め)
   map.addLayer({ id: 'survey-points', type: 'circle', source: 'survey-src',
-    filter: ['==', ['geometry-type'], 'Point'],
+    filter: ['all', ['==', ['geometry-type'], 'Point'], ['!=', ['get', 'category'], '通行止め']],
     paint: {
       'circle-radius': ['get', 'size'],
       'circle-color': 'white',
       'circle-stroke-width': 1.5, 'circle-stroke-color': 'black',
     } })
+  // 通行止め: X mark symbol
+  map.addLayer({ id: 'survey-points-x', type: 'symbol', source: 'survey-src',
+    filter: ['all', ['==', ['geometry-type'], 'Point'], ['==', ['get', 'category'], '通行止め']],
+    layout: { 'icon-image': 'x-mark', 'icon-size': 1, 'icon-allow-overlap': true } })
+  // selection ring (works for both circle and X)
   map.addLayer({ id: 'survey-points-selected', type: 'circle', source: 'survey-src',
     filter: ['==', ['get', 'id'], ''],
     paint: {
-      'circle-radius': ['get', 'size'],
-      'circle-color': 'white',
-      'circle-stroke-width': 1.5, 'circle-stroke-color': 'black',
+      'circle-radius': ['max', ['+', ['get', 'size'], 4], 16],
+      'circle-color': 'rgba(0,0,0,0)',
+      'circle-stroke-width': 2.5, 'circle-stroke-color': '#f59e0b',
     } })
 }
 

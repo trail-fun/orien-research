@@ -49,7 +49,7 @@ export function SurveyMemoModal({
   const [selIdx, setSelIdx] = useState(selectedPointIndex ?? 0)
 
   // style
-  const rawStyle = memo?.style ?? defaultStyle(objType)
+  const rawStyle = memo?.style ?? defaultStyle(objType, memo?.category ?? catsFor(objType)[0])
   const [color, setColor]   = useState((rawStyle as { color: string }).color)
   const [opacity, setOpacity] = useState(rawStyle.opacity)
   const [size, setSize]     = useState((rawStyle as Partial<PointStyle>).size ?? 10)

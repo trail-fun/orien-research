@@ -29,10 +29,28 @@ function calcBbox(features: Array<{ geometry: { coordinates: unknown } }>): [num
   return [minLng - pad, minLat - pad, maxLng + pad, maxLat + pad]
 }
 
-export function defaultStyle(objectType: SurveyMemoObjectType): SurveyMemoStyle {
-  if (objectType === 'point') return { size: 10, color: '#f59e0b', opacity: 0.9 } as PointStyle
-  if (objectType === 'line') return { width: 3, color: '#f59e0b', opacity: 0.9 } as LineStyle
-  return { color: '#f59e0b', opacity: 0.35 } as AreaStyle
+export function defaultStyle(objectType: SurveyMemoObjectType, category?: MemoCategory): SurveyMemoStyle {
+  if (objectType === 'point') {
+    const color =
+      (category === '岩' || category === '崖') ? '#8B4513' :
+      category === '通行止め' ? '#e74c3c' :
+      category === '水場' ? '#87ceeb' :
+      '#2563eb'
+    return { size: 10, color, opacity: 0.9 } as PointStyle
+  }
+  if (objectType === 'line') {
+    const color =
+      category === 'トレイル' ? '#111111' :
+      category === 'フェンス' ? '#888888' :
+      category === '崖（線状）' ? '#8B4513' :
+      '#2563eb'
+    return { width: 3, color, opacity: 0.9 } as LineStyle
+  }
+  const color =
+    category === '立入禁止区域' ? '#e74c3c' :
+    category === '藪' ? '#27ae60' :
+    '#f59e0b'
+  return { color, opacity: 0.35 } as AreaStyle
 }
 
 /** Haversine distance in meters */
