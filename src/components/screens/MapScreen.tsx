@@ -62,6 +62,9 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
   selectedCpIdRef.current = selectedCpId
   const dragMarkersRef = useRef<maplibregl.Marker[]>([])
   const cpDragMarkerRef = useRef<maplibregl.Marker | null>(null)
+  const magnifierRef = useRef<HTMLDivElement>(null)
+  const magnifierContainerRef = useRef<HTMLDivElement>(null)
+  const magnifierMapRef = useRef<maplibregl.Map | null>(null)
 
   // single-click timer for survey memo double-click detection
   const memoClickTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -108,6 +111,26 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ---- magnifier mini-map init ----
+  useEffect(() => {
+    const container = magnifierContainerRef.current
+    if (!container) return
+    const miniMap = new maplibregl.Map({
+      container,
+      style: {
+        version: 8,
+        sources: { gsi: { type: 'raster', tiles: [GSI_TILE_URL], tileSize: 256, attribution: '' } },
+        layers: [{ id: 'gsi', type: 'raster', source: 'gsi' }],
+      },
+      center: [136.0, 36.0],
+      zoom: 18,
+      interactive: false,
+      attributionControl: false,
+    })
+    magnifierMapRef.current = miniMap
+    return () => { miniMap.remove(); magnifierMapRef.current = null }
+  }, [])
+
   // ---- layer update when project / options change ----
   useEffect(() => {
     const map = mapRef.current
@@ -144,7 +167,22 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
     el.style.cssText = 'width:12px;height:12px;background:white;border:1.5px solid black;border-radius:50%;cursor:grab;box-shadow:0 1px 3px rgba(0,0,0,0.4);'
     const marker = new maplibregl.Marker({ element: el, draggable: true, anchor: 'center' })
       .setLngLat(cp.coordinates).addTo(map)
+    marker.on('drag', () => {
+      const { lng, lat } = marker.getLngLat()
+      const src = map.getSource('cps-src') as maplibregl.GeoJSONSource | undefined
+      if (src) {
+        const p = projectRef.current
+        src.setData({ type: 'FeatureCollection', features: p.cps.map(c => ({
+          type: 'Feature' as const,
+          properties: { id: c.id, number: c.number, usage: c.usage },
+          geometry: { type: 'Point' as const, coordinates: c.id === cp.id ? [lng, lat] : c.coordinates },
+        })) } as Parameters<maplibregl.GeoJSONSource['setData']>[0])
+      }
+      const px = map.project([lng, lat])
+      showMagnifier([lng, lat], px)
+    })
     marker.on('dragend', () => {
+      hideMagnifier()
       const { lng, lat } = marker.getLngLat()
       const p = projectRef.current
       const cur = p.cps.find(c => c.id === selectedCpId)
@@ -196,9 +234,12 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
             features: buildSurveyFeatures(p.surveyMemos.map(m => m.id === selectedMemoId ? updated : m))
           } as Parameters<maplibregl.GeoJSONSource['setData']>[0])
         }
+        const px = map.project([lng, lat])
+        showMagnifier([lng, lat], px)
       })
 
       marker.on('dragend', () => {
+        hideMagnifier()
         const { lng, lat } = marker.getLngLat()
         const newCoord: [number, number] = [lng, lat]
         const p = projectRef.current
@@ -500,6 +541,21 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
     )
   }, [])
 
+  // ---- Magnifier helpers ----
+  const showMagnifier = useCallback((lngLat: [number, number], px: { x: number; y: number }) => {
+    magnifierMapRef.current?.jumpTo({ center: lngLat, zoom: 18 })
+    const el = magnifierRef.current
+    if (!el) return
+    el.style.left = `${px.x - 75}px`
+    el.style.top = `${px.y - 170}px`
+    el.style.display = 'block'
+  }, [])
+
+  const hideMagnifier = useCallback(() => {
+    const el = magnifierRef.current
+    if (el) el.style.display = 'none'
+  }, [])
+
   // ---- Undo ----
   const pushHistory = useCallback((action: HistoryAction) => {
     setHistory(prev => [...prev.slice(-MAX_UNDO + 1), action])
@@ -716,8 +772,25 @@ export function MapScreen({ project, onProjectChange, onBackToPrepare }: Props) 
         </div>
       )}
 
-      {/* Map */}
-      <div ref={mapContainer} style={{ flex: 1, position: 'relative' }} />
+      {/* Map + Magnifier */}
+      <div style={{ flex: 1, position: 'relative' }}>
+        <div ref={mapContainer} style={{ position: 'absolute', inset: 0 }} />
+        <div ref={magnifierRef} style={{
+          position: 'absolute', display: 'none', width: 150, height: 150,
+          borderRadius: '50%', overflow: 'hidden',
+          border: '3px solid rgba(0,0,0,0.45)',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.35)',
+          pointerEvents: 'none', zIndex: 100,
+        }}>
+          <div ref={magnifierContainerRef} style={{ width: 150, height: 150 }} />
+          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <svg width="22" height="22" viewBox="0 0 22 22">
+              <line x1="11" y1="2" x2="11" y2="20" stroke="rgba(0,0,0,0.7)" strokeWidth="1.5"/>
+              <line x1="2" y1="11" x2="20" y2="11" stroke="rgba(0,0,0,0.7)" strokeWidth="1.5"/>
+            </svg>
+          </div>
+        </div>
+      </div>
 
       {/* Bottom toolbar — 2 rows */}
       <div style={{
